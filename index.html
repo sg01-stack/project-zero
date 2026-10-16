@@ -20,9 +20,10 @@
       <span>Noise floor: <strong id="noiseVal">—</strong></span>
       <span>Pitch: <strong id="pitchVal">—</strong></span>
     </div>
-    <button id="startBtn">Start microphone</button>
-    <div id="micStatus">Microphone off</div>
-    <p id="notice" role="status">Start in a quiet room and remain silent for 1.2 seconds to calibrate the noise floor.</p>
+    <button id="startBtn" disabled>Start microphone</button>
+    <div id="micStatus">Loading microphone controls…</div>
+    <p id="notice" role="status">Loading EchoSphere… If this message remains, extract the complete ZIP before opening index.html, or open dist/echosphere.html.</p>
+    <noscript><p>Enable JavaScript in your browser to use the microphone.</p></noscript>
     <h2>Latest event</h2>
     <pre id="jsonLog" aria-label="Latest JSON payload">{"status": "awaiting_session"}</pre>
     <p id="deliveryStatus" role="status">No LLM connected. Audio events and completed turns are available locally.</p>
@@ -48,6 +49,6 @@
       <p>Audio analysis stays on this device. When Evolus is configured on the local backend, completed turn JSON is sent to its remote agent; microphone PCM is not sent. No browser speech recognition is enabled. See the README for configuration and integration.</p>
     </details>
   </main>
-  <script type="module" src="./src/app.mjs"></script>
+  <script defer src="./dist/app.js" onerror="document.getElementById('micStatus').textContent = 'Application could not load'; document.getElementById('notice').textContent = 'EchoSphere could not load its app files. Extract the complete ZIP, then open index.html again, or open the self-contained dist/echosphere.html.';"></script>
 </body>
 </html>

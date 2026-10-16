@@ -69,20 +69,31 @@ async function start() {
   }
   starting = true;
   $('startBtn').disabled = true;
-  window.speechSynthesis?.cancel();
   $('notice').textContent = 'Allow microphone access, then remain quiet for 1.2 seconds.';
+  $('micStatus').textContent = 'Waiting for microphone permission…';
+  let permissionTimer;
   try {
+    window.speechSynthesis?.cancel();
     if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia) {
       throw new Error('Microphone capture requires localhost or HTTPS. Run npm start and open the local page.');
     }
+    if (!window.AudioContext) throw new Error('This browser does not support audio capture. Use a current Chrome, Edge, Firefox, or Safari.');
     context = new AudioContext();
-    // Resume during the click gesture, before awaiting the permission dialog.
-    await context.resume();
     if (!context.audioWorklet) throw new Error('This browser does not support AudioWorklet. Use a current browser.');
+    // Request both during the click. A suspended audio context must not prevent
+    // getUserMedia from displaying its permission prompt.
+    const resumed = context.resume().then(() => null, error => error);
+    permissionTimer = setTimeout(() => {
+      $('notice').textContent = 'Still waiting for microphone access. Check the browser permission prompt or the microphone icon in its address bar.';
+    }, 10000);
     stream = await navigator.mediaDevices.getUserMedia({ audio: {
       channelCount: { ideal: 1 }, autoGainControl: false, noiseSuppression: false,
       echoCancellation: true,
     } });
+    clearTimeout(permissionTimer);
+    $('micStatus').textContent = 'Starting audio capture…';
+    const resumeError = await resumed;
+    if (resumeError) throw resumeError;
     engine = new AudioEngine({ onFrame, onTurn, onEvent(payload) {
       logPayload(payload);
       window.dispatchEvent(new CustomEvent('echosphere:audio-event', { detail: structuredClone(payload) }));
@@ -115,10 +126,19 @@ async function start() {
     $('notice').textContent = 'Stay quiet for calibration. Then speak or whisper naturally. Use headphones when your narrative engine plays audio.';
     $('micStatus').textContent = 'Microphone active · all analysis on this device';
   } catch (error) {
-    $('notice').textContent = `Could not start: ${error.message}`;
+    const hints = {
+      NotAllowedError: 'Microphone access was blocked. Allow Microphone in the browser’s site controls and your operating system’s privacy settings, then try again.',
+      SecurityError: 'Microphone access is disabled in this browser or page. Check its permission settings, or open the app through the local server.',
+      NotFoundError: 'No microphone was found. Connect a microphone and check your system’s selected audio input, then try again.',
+      NotReadableError: 'The microphone could not be opened. Close other apps using it and check your system’s audio input, then try again.',
+      AbortError: 'Microphone startup was interrupted. Check your audio input and try again.',
+    };
+    $('notice').textContent = `Could not start: ${hints[error.name] || error.message}`;
     await releaseAudio();
     running = false;
+    $('micStatus').textContent = 'Microphone off';
   } finally {
+    clearTimeout(permissionTimer);
     starting = false;
     $('startBtn').disabled = false;
   }
@@ -248,4 +268,7 @@ window.echoSphere = Object.freeze({
   addTranscript: result => engine?.setTranscript(result) || false,
   getStatus: () => ({ running, agentReady, turnId: engine?.turn?.id || null, queuedTurns, transportState }),
 });
+$('startBtn').disabled = false;
+$('micStatus').textContent = 'Microphone off';
+$('notice').textContent = 'Start in a quiet room and remain silent for 1.2 seconds to calibrate the noise floor.';
 void connectEvolus();

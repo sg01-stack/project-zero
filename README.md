@@ -14,7 +14,15 @@ npm run build
 npm start
 ```
 
-The complete source page is `index.html`, its stylesheet is `style.css`, and the browser modules are in `src/`. You can also use GitHub's **Code → Download ZIP**, extract it, and run the npm commands from that folder.
+The complete source page is `index.html`, its stylesheet is `style.css`, and the browser modules are in `src/`. You can also use GitHub's **Code → Download ZIP**, extract it, and run the npm commands from that folder. The committed `dist/app.js` bundles the browser modules so the downloaded page can load without an ES module server; run `npm run build` after editing `src/`.
+
+### Downloaded page and microphone troubleshooting
+
+Extract the **entire ZIP** before opening `index.html`; keep `style.css` and the `dist/` folder next to it. The page loads a classic JavaScript bundle because browsers block external ES module imports when opening an HTML file directly from disk. For a single file, open `dist/echosphere.html`. These options provide the local detector; the Evolus agent still needs `npm start` and a server-side API key.
+
+Click **Start microphone**, allow access if prompted, and remain quiet for 1.2 seconds. Browsers that remember an existing permission may start capture without asking again. If permission was blocked previously, allow Microphone in the browser's site controls and check your operating system's microphone privacy settings. Missing or busy devices now show a specific message, and missing app files show extraction instructions.
+
+Some browsers or device policies restrict microphone access from local files. In that case, use Node.js 24.5 or newer, run `npm start` in the extracted project folder, and open the local address printed by the server on the same computer as your microphone. An ordinary HTTP page on a remote computer is not a secure microphone context; use the local server or HTTPS.
 
 Open the local server on port 8000 in a browser on the **same machine as the microphone**. A remote development container cannot capture your laptop microphone through its own loopback interface. For detector-only local use, download `dist/echosphere.html`, serve its directory with `python3 -m http.server 8000`, and open the served file in your browser. For Evolus integration, use the full project and `npm start`. Microphone capture requires a secure context (localhost or HTTPS) and permission. The standalone file contains all JavaScript and styles; no CDNs or browser speech-recognition services are used.
 
@@ -146,8 +154,8 @@ Store the turn ID when submitting audio to ASR and return **that same ID**, not 
 ## Validation and scope
 
 - `npm test`: 33 passing automated tests cover signal regression cases, 16/44.1/48 kHz features, calibration, clipping, turn summaries, transcript ownership, capture framing, delivery retry/timeouts, the HTTP backend, agent resolution, deduplication, and conversation isolation.
-- `npm run build`: builds the self-contained `dist/echosphere.html` from source. Do not edit the generated file by hand.
-- `npm run test:browser`: Playwright/Chromium checks the source and standalone pages with a fake microphone. It covers microphone-to-JSON delivery, permission errors, automatic agent routing with a mock provider, visible replies, mobile layout, and local-voice playback wiring with a mock voice. It never uses live credentials.
+- `npm run build`: builds `dist/app.js` and the self-contained `dist/echosphere.html` from source. Do not edit generated files by hand.
+- `npm run test:browser`: Playwright/Chromium checks the root and standalone pages with a fake microphone and external module requests blocked. It covers microphone-to-JSON delivery, permission/device errors, startup failures, automatic agent routing with a mock provider, visible replies, mobile layout, and local-voice playback wiring with a mock voice. Direct file navigation is also checked where browser policy permits it; a policy block is explicitly reported as skipped. It never uses live credentials.
 - `npm run test:live`: an explicit, optional live test. It requires the server key, Playwright, and Chromium, and makes one real agent completion. The verified path is fake microphone → AudioWorklet → detector → local HTTP backend → live Evolus agent → browser. It stops capture after the first turn to avoid repeated paid requests. Ordinary tests do not call the live API.
 
 Browser checks require Playwright to be available to Node and Chromium at `/usr/bin/chromium` (or `CHROMIUM_PATH`). They were available in the cloud workspace and are not app runtime dependencies. The optional `.env` supports local execution; no real key is included in the project or archive.

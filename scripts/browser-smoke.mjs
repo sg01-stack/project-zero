@@ -46,6 +46,9 @@ try {
   page.on('pageerror', e => errors.push(e.message));
   const externalRequests = [];
   page.on('request', r => { if (/^https?:/.test(r.url()) && new URL(r.url()).hostname !== '127.0.0.1') externalRequests.push(r.url()); });
+  // The downloaded entry page must not depend on external ES modules.
+  // Browsers block those imports from file:// documents.
+  await page.route('**/*.mjs', route => route.abort());
   // Exercise both the source page and the actual downloadable single file.
   for (const path of ['/', '/dist/echosphere.html']) {
     await page.goto(`http://127.0.0.1:${port}${path}`);
@@ -70,16 +73,49 @@ try {
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
     console.log(`PASS ${path}: microphone → AudioWorklet → detector → JSON → acknowledged handler; stop; mobile layout`);
   }
-  // Microphone permission failure must leave a usable Start button.
+  const diskPage = await context.newPage();
+  let diskAllowed = true;
+  try { await diskPage.goto(new URL('../index.html', import.meta.url).href); }
+  catch (error) {
+    if (!error.message.includes('ERR_BLOCKED_BY_ADMINISTRATOR')) throw error;
+    diskAllowed = false;
+    console.log('SKIP direct file navigation: cloud browser administrator policy blocks file:// pages');
+  }
+  if (diskAllowed) {
+    await diskPage.getByRole('button', { name: 'Start microphone', exact: true }).click();
+    await diskPage.waitForFunction(() => window.echoSphere?.getStatus().running);
+    await diskPage.getByRole('button', { name: 'Stop microphone', exact: true }).click();
+    await diskPage.waitForFunction(() => !window.echoSphere.getStatus().running);
+    console.log('PASS downloaded index.html opened directly: microphone starts and stops');
+  }
+  await diskPage.close();
+  // Permission/device errors must explain how to recover and allow retry.
   const denied = await browser.newContext();
   const deniedPage = await denied.newPage();
+  for (const [name, hint] of [['NotAllowedError', 'site controls'], ['NotFoundError', 'No microphone was found'], ['NotReadableError', 'Close other apps']]) {
+    await deniedPage.goto(`http://127.0.0.1:${port}`);
+    await deniedPage.evaluate(name => { navigator.mediaDevices.getUserMedia = async () => { throw new DOMException('Device error', name); }; }, name);
+    await deniedPage.getByRole('button', { name: 'Start microphone', exact: true }).click();
+    await deniedPage.waitForFunction(() => document.getElementById('notice').textContent.includes('Could not start:'));
+    assert.ok((await deniedPage.locator('#notice').textContent()).includes(hint));
+    assert.equal(await deniedPage.getByRole('button', { name: 'Start microphone', exact: true }).isEnabled(), true);
+    assert.equal(await deniedPage.evaluate(() => window.echoSphere.getStatus().running), false);
+  }
+  console.log('PASS permission denied, missing microphone and busy device: recovery instructions and restart enabled');
   await deniedPage.goto(`http://127.0.0.1:${port}`);
-  await deniedPage.evaluate(() => { navigator.mediaDevices.getUserMedia = async () => { throw new DOMException('Permission denied', 'NotAllowedError'); }; });
+  await deniedPage.evaluate(() => {
+    AudioContext.prototype.resume = () => new Promise(() => {});
+    navigator.mediaDevices.getUserMedia = async () => { window.permissionRequested = true; throw new DOMException('Permission denied', 'NotAllowedError'); };
+  });
   await deniedPage.getByRole('button', { name: 'Start microphone', exact: true }).click();
-  await deniedPage.waitForFunction(() => document.getElementById('notice').textContent.includes('Could not start:'));
-  assert.equal(await deniedPage.getByRole('button', { name: 'Start microphone', exact: true }).isEnabled(), true);
-  assert.equal(await deniedPage.evaluate(() => window.echoSphere.getStatus().running), false);
-  console.log('PASS permission failure: clear error, microphone off, restart enabled');
+  await deniedPage.waitForFunction(() => window.permissionRequested === true);
+  await deniedPage.waitForFunction(() => !document.getElementById('startBtn').disabled);
+  console.log('PASS suspended audio context does not prevent microphone permission request');
+  await deniedPage.route('**/dist/app.js', route => route.abort());
+  await deniedPage.goto(`http://127.0.0.1:${port}`);
+  await deniedPage.waitForFunction(() => document.getElementById('notice').textContent.includes('could not load its app files'));
+  assert.equal(await deniedPage.getByRole('button', { name: 'Start microphone', exact: true }).isDisabled(), true);
+  console.log('PASS missing app bundle shows extraction instructions instead of an unresponsive button');
   // Exercise the actual Node route with an injected agent, never the live API.
   let agentCalls = 0;
   mockServer = createApplicationServer({
