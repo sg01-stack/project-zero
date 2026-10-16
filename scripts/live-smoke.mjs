@@ -8,7 +8,10 @@ import { join } from 'node:path';
 import { once } from 'node:events';
 import { fileURLToPath } from 'node:url';
 import { createApplicationServer } from '../server/app.mjs';
-if (!process.env.EVOLUS_API_KEY) throw new Error('Set EVOLUS_API_KEY securely before running a live check.');
+import { loadRuntime } from './runtime.mjs';
+const root = fileURLToPath(new URL('..', import.meta.url));
+const env = await loadRuntime(root);
+if (!env.EVOLUS_API_KEY) throw new Error('Connect a local Evolus key or set EVOLUS_API_KEY before running a live check.');
 const require = createRequire(import.meta.url);
 const { chromium } = require('playwright');
 const temp = await mkdtemp(join(tmpdir(), 'echosphere-live-'));
@@ -25,7 +28,7 @@ for (let i = 0; i < rate * 10; i++) {
   wav.writeInt16LE(Math.round(x * 32767), 44 + i * 2);
 }
 await writeFile(fixture, wav);
-const server = createApplicationServer({root: fileURLToPath(new URL('..', import.meta.url))});
+const server = createApplicationServer({root, env});
 server.listen(0, '127.0.0.1'); await once(server, 'listening');
 let browser;
 try {
@@ -33,6 +36,9 @@ try {
     args:['--no-sandbox','--use-fake-ui-for-media-stream','--use-fake-device-for-media-stream',`--use-file-for-fake-audio-capture=${fixture}`]});
   const context = await browser.newContext({permissions:['microphone']});
   const page = await context.newPage();
+  if (process.env.ECHOSPHERE_CAPTURE_MODE === 'compatibility') {
+    await page.addInitScript(() => { AudioWorklet.prototype.addModule = async () => { throw new DOMException('Worklet loading interrupted', 'AbortError'); }; });
+  }
   const errors = [];
   page.on('pageerror', e => errors.push(e.message));
   await page.goto(`http://127.0.0.1:${server.address().port}`);
@@ -61,7 +67,7 @@ try {
   assert.equal(status.live_connection_verified, true);
   await page.setViewportSize({width:1000,height:1000});
   await page.screenshot({path:'/tmp/echosphere-live-verified.png',fullPage:true});
-  console.log(JSON.stringify({passed:true,path:'fake microphone -> AudioWorklet -> detector -> local HTTP backend -> live Evolus agent -> browser',turns:1,responses:1,agent_id:result.responses[0].agent_id,reply:result.responses[0].reply,transcript:null,hardware_microphone_tested:false},null,2));
+  console.log(JSON.stringify({passed:true,path:`fake microphone -> ${result.status.captureMode} -> detector -> local HTTP backend -> live Evolus agent -> browser`,turns:1,responses:1,agent_id:result.responses[0].agent_id,reply:result.responses[0].reply,transcript:null,hardware_microphone_tested:false},null,2));
 } finally {
   await browser?.close(); server.closeAllConnections(); server.close(); await rm(temp,{recursive:true,force:true});
 }

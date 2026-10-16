@@ -3,7 +3,29 @@ import assert from 'node:assert/strict';
 import vm from 'node:vm';
 import http from 'node:http';
 import { once } from 'node:events';
-import { WORKLET_SOURCE, TurnDispatcher, createLocalJsonHandler } from '../src/capture.mjs';
+import { WORKLET_SOURCE, TurnDispatcher, createLocalJsonHandler, createCompatibilityCapture } from '../src/capture.mjs';
+
+test('compatibility capture preserves contiguous frames and silence output at common sample rates', () => {
+  for (const sampleRate of [44100, 48000]) {
+    const packets = [];
+    const node = { disconnect() { this.disconnected = true; } };
+    const capture = createCompatibilityCapture({ sampleRate, createScriptProcessor: () => node }, packet => packets.push(packet));
+    for (let frame = 0; frame < 3; frame++) {
+      const input = Float32Array.from({ length: 2048 }, (_, i) => frame * 2048 + i + 1);
+      const output = new Float32Array(2048).fill(1);
+      node.onaudioprocess({ inputBuffer: { getChannelData: () => input }, outputBuffer: { numberOfChannels: 1, getChannelData: () => output } });
+      assert.ok(output.every(value => value === 0));
+    }
+    capture.flush();
+    const samples = packets.flatMap(packet => [...packet]);
+    assert.deepEqual(samples.slice(0, 6144), Array.from({ length: 6144 }, (_, i) => i + 1));
+    assert.ok(samples.slice(6144).every(value => value === 0));
+    assert.ok(packets.every(packet => packet.length === Math.round(sampleRate * 0.05)));
+    const count = packets.length;
+    capture.flush(); assert.equal(packets.length, count);
+    capture.close(); assert.equal(node.onaudioprocess, null); assert.equal(node.disconnected, true);
+  }
+});
 
 test('worklet captures contiguous 50 ms frames at 44.1/48 kHz without microphone playback', () => {
   for (const rate of [44100, 48000]) {

@@ -1,8 +1,9 @@
 import http from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { extname, resolve, sep } from 'node:path';
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { createEvolusClient, listEvolusModels, resolveAgentModel, DEFAULT_AGENT_ID } from './evolus.mjs';
+import { saveSettings, validateSettings } from './settings.mjs';
 
 const types = { '.html': 'text/html', '.css': 'text/css', '.mjs': 'text/javascript', '.js': 'text/javascript', '.json': 'application/json' };
 const json = (res, status, data) => {
@@ -36,15 +37,20 @@ async function readJson(req, limit = 65536) {
   }
 }
 
-export function createApplicationServer({ root, env = process.env, completeTurn, listModels } = {}) {
-  const agentId = env.EVOLUS_AGENT_ID || DEFAULT_AGENT_ID;
-  const discoverModels = listModels || (() => listEvolusModels({ apiKey: env.EVOLUS_API_KEY }));
+export function createApplicationServer({ root, env = process.env, completeTurn, listModels, persistSettings = saveSettings } = {}) {
+  let agentId = env.EVOLUS_AGENT_ID || DEFAULT_AGENT_ID;
+  let apiKey = env.EVOLUS_API_KEY;
+  let preferredModel = env.EVOLUS_MODEL;
+  const setupToken = randomBytes(24).toString('hex');
+  let configuring = false, checking = false;
+  const discoverModels = key => listModels ? listModels(key) : listEvolusModels({ apiKey: key });
   let selectedModel = null, discovery = null, liveVerified = false;
   async function ensureAgent() {
-    if (!env.EVOLUS_API_KEY) throw Object.assign(new Error('Add EVOLUS_API_KEY to the server environment, then restart the server.'), { statusCode: 503 });
+    if (configuring) throw Object.assign(new Error('Agent setup is in progress. Try again when it finishes.'), { statusCode: 503 });
+    if (!apiKey) throw Object.assign(new Error('Connect your Evolus key using the setup form below.'), { statusCode: 503 });
     if (selectedModel) return selectedModel;
-    if (!discovery) discovery = Promise.resolve().then(discoverModels).then(ids => {
-      selectedModel = resolveAgentModel(ids, { agentId, preferredModel: env.EVOLUS_MODEL });
+    if (!discovery) discovery = Promise.resolve().then(() => discoverModels(apiKey)).then(ids => {
+      selectedModel = resolveAgentModel(ids, { agentId, preferredModel });
       return selectedModel;
     }).finally(() => { discovery = null; });
     return discovery;
@@ -59,14 +65,44 @@ export function createApplicationServer({ root, env = process.env, completeTurn,
       if (!['127.0.0.1', 'localhost', '[::1]'].includes(base.hostname)) return json(res, 403, { error: 'Invalid local host.' });
       if (req.headers.origin && req.headers.origin !== base.origin) return json(res, 403, { error: 'Cross-origin requests are not allowed.' });
       const pathname = decodeURIComponent(new URL(req.url, base).pathname);
+      if (pathname === '/api/health' && req.method === 'GET') return json(res, 200, { app: 'EchoSphere', version: '1.1' });
       if (pathname === '/api/status' && req.method === 'GET') {
         let error = null;
         try { await ensureAgent(); } catch (e) { error = e.statusCode ? e.message : 'Could not resolve the configured agent.'; }
         return json(res, 200, {
-          configured: Boolean(selectedModel), missing: env.EVOLUS_API_KEY ? [] : ['EVOLUS_API_KEY'],
+          app: 'EchoSphere', setup_token: setupToken,
+          configured: Boolean(selectedModel), missing: apiKey ? [] : ['EVOLUS_API_KEY'],
           agent_id: agentId, selected_model: selectedModel, provider: 'Evolus', integration_mode: 'agent',
           agent_route_verified: Boolean(selectedModel), live_connection_verified: liveVerified, error,
         });
+      }
+      if (['/api/config', '/api/check'].includes(pathname) && req.method === 'POST') {
+        if (req.headers['x-echosphere-token'] !== setupToken) return json(res, 403, { error: 'Reload the app before changing or testing its connection.' });
+        const body = await readJson(req, 4096);
+        if (configuring || checking || inflight.size || discovery) return json(res, 409, { error: 'Wait for the current agent request to finish, then retry.' });
+        if (pathname === '/api/config') {
+          const candidate = validateSettings({ apiKey: typeof body?.apiKey === 'string' ? body.apiKey.trim() : body?.apiKey, agentId: body?.agentId || agentId });
+          configuring = true;
+          try {
+            const model = resolveAgentModel(await discoverModels(candidate.apiKey), { agentId: candidate.agentId });
+            await persistSettings(root, candidate, body.remember === true);
+            apiKey = candidate.apiKey; agentId = candidate.agentId; preferredModel = model;
+            selectedModel = model; liveVerified = false;
+            sessions.clear(); completed.clear();
+            return json(res, 200, { configured: true, agent_id: agentId, remembered: body.remember === true });
+          } finally { configuring = false; }
+        }
+        checking = true;
+        try {
+          const model = await ensureAgent();
+          const payload = { schema_version: '1.0', event: 'connection_test', turn_id: `check:${randomUUID()}`,
+            transcript: { text: 'This is a connection test. Reply briefly in English to confirm you are ready for an interactive story.' },
+            llm_guidance: 'No microphone audio is included in this connection test.' };
+          const result = completeTurn ? await completeTurn(payload, model, []) : await createEvolusClient({ apiKey, model })(payload);
+          if (typeof result?.reply !== 'string' || !result.reply.trim()) throw Object.assign(new Error('The agent returned no text.'), { statusCode: 502 });
+          liveVerified = true;
+          return json(res, 200, { verified: true, reply: result.reply, agent_id: agentId });
+        } finally { checking = false; }
       }
       if (pathname === '/api/turn' && req.method === 'POST') {
         const payload = await readJson(req);
@@ -84,7 +120,7 @@ export function createApplicationServer({ root, env = process.env, completeTurn,
           const history = sessions.get(payload.session_id) || [];
           const promise = Promise.resolve().then(() => completeTurn
             ? completeTurn(payload, model, structuredClone(history))
-            : createEvolusClient({ apiKey: env.EVOLUS_API_KEY, model })(payload, history)
+            : createEvolusClient({ apiKey, model })(payload, history)
           ).then(response => {
             if (response?.turn_id !== id || typeof response.reply !== 'string' || !response.reply.trim()) {
               throw Object.assign(new Error('The agent returned an invalid response.'), { statusCode: 502 });

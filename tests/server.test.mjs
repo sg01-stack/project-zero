@@ -59,9 +59,56 @@ test('backend status lists missing names; source/assets cannot disclose server f
   assert.equal((await post(fixture())).status, 503);
   assert.equal((await fetch(`${base}/`)).status, 200);
   assert.equal((await fetch(`${base}/src/audio-engine.mjs`)).status, 200);
-  for (const path of ['/server/evolus.mjs', '/.env', '/package.json', '/tests/server.test.mjs', '/.git/config']) {
+  for (const path of ['/server/evolus.mjs', '/.env', '/.echosphere.local.json', '/.echosphere.local.json.tmp', '/package.json', '/tests/server.test.mjs', '/.git/config']) {
     assert.equal((await fetch(base + path)).status, 404, path);
   }
+});
+
+test('local setup verifies a key, keeps it server-side and tests the actual completion path', async t => {
+  const saved = [], discovered = [];
+  let completions = 0;
+  const { base } = await serve(t, {
+    listModels: async key => { discovered.push(key); return [ROUTE]; },
+    persistSettings: async (root, value, remember) => saved.push({ value, remember }),
+    completeTurn: async payload => { completions++; return { turn_id: payload.turn_id, reply: 'Live adapter test reply.' }; },
+  });
+  const status = await (await fetch(`${base}/api/status`)).json();
+  assert.equal(status.configured, false);
+  const config = { apiKey: 'local-test-key', agentId: DEFAULT_AGENT_ID, remember: true };
+  const send = (path, body, token = status.setup_token, origin = base) => fetch(base + path, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', 'X-EchoSphere-Token': token, Origin: origin }, body: JSON.stringify(body),
+  });
+  assert.equal((await send('/api/config', config, 'wrong-token')).status, 403);
+  assert.equal((await send('/api/config', config, status.setup_token, 'https://unrelated.example')).status, 403);
+  assert.equal(saved.length, 0); assert.equal(discovered.length, 0);
+  assert.equal((await send('/api/config', { ...config, apiKey: 123 })).status, 400);
+  const configured = await send('/api/config', config);
+  assert.equal(configured.status, 200);
+  assert.ok(!(await configured.text()).includes(config.apiKey));
+  assert.deepEqual(discovered, [config.apiKey]);
+  assert.deepEqual(saved, [{ value: { apiKey: config.apiKey, agentId: DEFAULT_AGENT_ID }, remember: true }]);
+  const next = await (await fetch(`${base}/api/status`)).json();
+  assert.equal(next.configured, true); assert.equal(next.live_connection_verified, false);
+  assert.ok(!JSON.stringify(next).includes(config.apiKey));
+  const checked = await send('/api/check', {});
+  assert.equal(checked.status, 200); assert.equal((await checked.json()).reply, 'Live adapter test reply.');
+  assert.equal(completions, 1);
+  assert.equal((await (await fetch(`${base}/api/status`)).json()).live_connection_verified, true);
+});
+
+test('failed key validation preserves the working configuration and does not persist a rejected key', async t => {
+  let saved = false;
+  const { base, post } = await serve(t, { env: testEnv,
+    listModels: async key => { if (key === 'rejected-key') throw Object.assign(new Error('Access denied.'), { statusCode: 502 }); return [ROUTE]; },
+    persistSettings: async () => { saved = true; },
+    completeTurn: async payload => ({ turn_id: payload.turn_id, reply: 'Still connected.' }),
+  });
+  const status = await (await fetch(`${base}/api/status`)).json();
+  const result = await fetch(`${base}/api/config`, { method: 'POST', headers: {
+    'Content-Type': 'application/json', 'X-EchoSphere-Token': status.setup_token,
+  }, body: JSON.stringify({ apiKey: 'rejected-key', agentId: DEFAULT_AGENT_ID }) });
+  assert.equal(result.status, 502); assert.equal(saved, false);
+  assert.equal((await post(fixture())).status, 200);
 });
 
 test('actual HTTP turn submission reaches adapter and deduplicates retries and concurrent submissions', async t => {

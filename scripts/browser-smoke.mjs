@@ -28,7 +28,7 @@ for (let i = 0; i < rate * seconds; i++) {
 }
 await writeFile(fixture, wav);
 const port = process.env.SMOKE_PORT || '8001';
-const server = spawn(process.execPath, ['scripts/serve.mjs'], { cwd: new URL('..', import.meta.url), env: { ...process.env, PORT: port, EVOLUS_API_KEY: '', EVOLUS_MODEL: '', EVOLUS_AGENT_ID: '' }, stdio: ['ignore', 'pipe', 'inherit'] });
+const server = spawn(process.execPath, ['scripts/serve.mjs', '--no-local-config'], { cwd: new URL('..', import.meta.url), env: { ...process.env, PORT: port, EVOLUS_API_KEY: '', EVOLUS_MODEL: '', EVOLUS_AGENT_ID: '' }, stdio: ['ignore', 'pipe', 'inherit'] });
 let browser;
 let mockServer;
 try {
@@ -50,8 +50,9 @@ try {
   // Browsers block those imports from file:// documents.
   await page.route('**/*.mjs', route => route.abort());
   // Exercise both the source page and the actual downloadable single file.
-  for (const path of ['/', '/dist/echosphere.html']) {
+  for (const { path, compatibility } of [{ path: '/' }, { path: '/dist/echosphere.html' }, { path: '/', compatibility: true }]) {
     await page.goto(`http://127.0.0.1:${port}${path}`);
+    if (compatibility) await page.evaluate(() => { AudioWorklet.prototype.addModule = async () => { throw new DOMException('Unable to load worklet module', 'AbortError'); }; });
     await page.evaluate(() => {
       window.testTurns = []; window.testDelivered = [];
       window.addEventListener('echosphere:turn', e => window.testTurns.push(e.detail));
@@ -66,12 +67,14 @@ try {
     await page.getByRole('button', { name: 'Stop microphone', exact: true }).click();
     await page.waitForFunction(() => !window.echoSphere.getStatus().running);
     const status = await page.evaluate(() => window.echoSphere.getStatus());
+    assert.equal(status.captureMode, compatibility ? 'Compatibility' : 'AudioWorklet');
+    assert.ok(status.frameCount > 24);
     assert.equal(status.queuedTurns, 0); assert.equal(status.transportState, 'delivered');
     assert.equal(await page.evaluate(() => window.testTurns.length), 1);
     assert.deepEqual(await page.evaluate(() => window.testDelivered), [payload.turn_id]);
     await page.setViewportSize({ width: 390, height: 844 });
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
-    console.log(`PASS ${path}: microphone → AudioWorklet → detector → JSON → acknowledged handler; stop; mobile layout`);
+    console.log(`PASS ${path} (${status.captureMode}): microphone → detector → JSON → acknowledged handler; stop; mobile layout`);
   }
   const diskPage = await context.newPage();
   let diskAllowed = true;
@@ -96,7 +99,7 @@ try {
     await deniedPage.goto(`http://127.0.0.1:${port}`);
     await deniedPage.evaluate(name => { navigator.mediaDevices.getUserMedia = async () => { throw new DOMException('Device error', name); }; }, name);
     await deniedPage.getByRole('button', { name: 'Start microphone', exact: true }).click();
-    await deniedPage.waitForFunction(() => document.getElementById('notice').textContent.includes('Could not start:'));
+    await deniedPage.waitForFunction(() => document.getElementById('notice').textContent.includes('Could not start'));
     assert.ok((await deniedPage.locator('#notice').textContent()).includes(hint));
     assert.equal(await deniedPage.getByRole('button', { name: 'Start microphone', exact: true }).isEnabled(), true);
     assert.equal(await deniedPage.evaluate(() => window.echoSphere.getStatus().running), false);
@@ -111,6 +114,46 @@ try {
   await deniedPage.waitForFunction(() => window.permissionRequested === true);
   await deniedPage.waitForFunction(() => !document.getElementById('startBtn').disabled);
   console.log('PASS suspended audio context does not prevent microphone permission request');
+  // A late permission grant after cancel must not leave a microphone open.
+  await deniedPage.goto(`http://127.0.0.1:${port}`);
+  await deniedPage.evaluate(() => {
+    navigator.mediaDevices.getUserMedia = () => new Promise(resolve => { window.grantLater = resolve; });
+  });
+  await deniedPage.getByRole('button', { name: 'Start microphone', exact: true }).click();
+  await deniedPage.getByRole('button', { name: 'Cancel microphone request', exact: true }).click();
+  await deniedPage.waitForFunction(() => !window.echoSphere.getStatus().starting);
+  await deniedPage.evaluate(() => window.grantLater({ getTracks: () => [{ stop: () => { window.lateTrackStopped = true; } }] }));
+  await deniedPage.waitForFunction(() => window.lateTrackStopped === true);
+  console.log('PASS cancellation releases a microphone granted after the request was cancelled');
+  // Simulate the exact device AbortError, then let browser-default constraints recover.
+  await deniedPage.goto(`http://127.0.0.1:${port}`);
+  await deniedPage.evaluate(() => {
+    const acquire = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
+    window.acquisitions = [];
+    navigator.mediaDevices.getUserMedia = options => {
+      window.acquisitions.push(options);
+      if (window.acquisitions.length === 1) return Promise.reject(new DOMException('Device aborted', 'AbortError'));
+      return acquire(options);
+    };
+  });
+  await deniedPage.getByRole('button', { name: 'Start microphone', exact: true }).click();
+  await deniedPage.waitForFunction(() => window.echoSphere.getStatus().frameCount > 5);
+  assert.equal(await deniedPage.evaluate(() => window.acquisitions[1].audio), true);
+  await deniedPage.getByRole('button', { name: 'Stop microphone', exact: true }).click();
+  await deniedPage.waitForFunction(() => !window.echoSphere.getStatus().running);
+  console.log('PASS interrupted device startup retries with browser-default constraints');
+  // A hung AudioContext no longer leaves the interface disabled indefinitely.
+  await deniedPage.goto(`http://127.0.0.1:${port}`);
+  await deniedPage.evaluate(() => {
+    AudioContext.prototype.resume = () => new Promise(() => {});
+    const acquire = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
+    navigator.mediaDevices.getUserMedia = async options => { const stream = await acquire(options); window.testTracks = stream.getTracks(); return stream; };
+  });
+  await deniedPage.getByRole('button', { name: 'Start microphone', exact: true }).click();
+  await deniedPage.waitForFunction(() => document.getElementById('notice').textContent.includes('Browser audio did not start'), {}, { timeout: 10000 });
+  await deniedPage.waitForFunction(() => !window.echoSphere.getStatus().starting);
+  assert.equal(await deniedPage.evaluate(() => window.testTracks.every(track => track.readyState === 'ended')), true);
+  console.log('PASS audio resume timeout releases the microphone and permits retry');
   await deniedPage.route('**/dist/app.js', route => route.abort());
   await deniedPage.goto(`http://127.0.0.1:${port}`);
   await deniedPage.waitForFunction(() => document.getElementById('notice').textContent.includes('could not load its app files'));
@@ -120,11 +163,13 @@ try {
   let agentCalls = 0;
   mockServer = createApplicationServer({
     root: fileURLToPath(new URL('..', import.meta.url)),
-    env: { EVOLUS_API_KEY: 'test-only-placeholder' },
-    listModels: async () => [ROUTE],
+    env: {},
+    listModels: async key => { assert.equal(key, 'test-only-placeholder'); return [ROUTE]; },
+    persistSettings: async (root, settings, remember) => { assert.equal(settings.apiKey, 'test-only-placeholder'); assert.equal(remember, false); },
     completeTurn: async (payload, selectedModel) => {
       agentCalls++;
       assert.equal(selectedModel, ROUTE);
+      if (payload.event === 'connection_test') return { turn_id: payload.turn_id, reply: 'Mock connection confirmation.' };
       assert.equal(payload.event, 'user_turn_complete');
       assert.equal(payload.prosody_analysis.dominant_style, 'voiced_speech');
       return { turn_id: payload.turn_id, reply: 'Mock narrative response through the backend.' };
@@ -132,14 +177,21 @@ try {
   });
   mockServer.listen(0, '127.0.0.1'); await once(mockServer, 'listening');
   await page.goto(`http://127.0.0.1:${mockServer.address().port}`);
-  await page.waitForFunction(() => window.echoSphere.getStatus().agentReady);
+  await page.waitForFunction(() => document.getElementById('agentSetup').open);
   assert.equal(agentCalls, 0);
+  await page.locator('#apiKeyInput').fill('test-only-placeholder');
+  await page.getByRole('button', { name: 'Connect and test agent', exact: true }).click();
+  await page.waitForFunction(() => document.getElementById('agentTestStatus').textContent.startsWith('Connection verified'));
+  assert.equal(agentCalls, 1);
+  assert.equal(await page.locator('#apiKeyInput').inputValue(), '');
+  assert.equal(await page.evaluate(() => window.localStorage.length), 0);
+  console.log('PASS first-run local key setup → model discovery → actual backend connection test with a mock agent');
   await page.getByRole('button', { name: 'Start microphone', exact: true }).click();
   await page.waitForFunction(() => document.getElementById('agentReply').textContent === 'Mock narrative response through the backend.', {}, { timeout: 15000 });
   assert.equal(await page.evaluate(() => window.echoSphere.getStatus().transportState), 'delivered');
   await page.getByRole('button', { name: 'Stop microphone', exact: true }).click();
   await page.waitForFunction(() => !window.echoSphere.getStatus().running);
-  assert.equal(agentCalls, 1);
+  assert.equal(agentCalls, 2);
   console.log('PASS automatic agent routing → microphone → real local backend → mocked agent → visible narrative response');
   await page.evaluate(() => {
     Object.defineProperty(window, 'speechSynthesis', { configurable: true, value: {

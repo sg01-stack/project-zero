@@ -2,31 +2,46 @@
 
 EchoSphere captures continuous audio, classifies vocal delivery, and sends completed-turn JSON to the existing Evolus agent backed by the user’s AMD-hosted model. A live browser-to-agent response has been verified. **It is a heuristic prototype, not a trained whisper/speech/noise classifier.** No detector based only on amplitude, zero crossings, and pitch can perfectly distinguish whispers, breathing, wind, coughing, and speech on arbitrary microphones.
 
-## Run
+## Run on Windows / Microsoft Edge
 
-Use Node.js 24.5 or newer. No npm packages or network downloads are required for the application. On your own computer, copy `.env.example` to `.env` and enter your API key there. Only the server reads this file; never put credentials in the HTML. In the configured cloud environment, the published secret is injected automatically. `npm start` enables Node's environment-proxy support and loads an optional local `.env` without replacing injected variables.
+1. Download the latest repository ZIP and **extract the entire folder**.
+2. Install [Node.js LTS](https://nodejs.org/) (version 22 or newer) if it is not already installed. The app has no npm dependencies to install.
+3. Double-click **Start EchoSphere.cmd**. Keep its terminal window open. It starts the local backend and opens the app in your default browser; paste the printed address into Edge if desired.
+4. In **Your narrative agent**, enter your Evolus key in the local setup form and click **Connect and test agent**. The configured agent ID is already filled in. A real response appears when the test succeeds. Choose **Remember on this computer** to keep the key across restarts.
+5. Select your microphone, click **Start microphone**, and allow access. Stay quiet for 1.2 seconds, then speak or whisper and pause for a response. The input meter should move while you speak.
+
+**A cloud-environment secret is not part of a GitHub ZIP.** Enter your key locally once; do not put it in source code or send it in chat. Remembered settings live in `.echosphere.local.json`, excluded from Git and inaccessible through the web server. This is a local plain-text settings file (owner-only permissions where supported), not an encrypted credential vault. With Remember unchecked, the key stays only in the running backend and any previously saved settings file is removed. Existing environment variables or `.env` settings take precedence on restart.
+
+Double-clicking `index.html` is a detector-only option: it cannot start the backend or connect Evolus. It now shows the launcher instructions prominently and uses compatibility capture to avoid local-file worklet loading failures. **Use the launcher for the complete microphone → JSON → agent → response workflow.** Browser/device policies can still restrict microphone access to local files.
+
+## Run from a terminal / develop
 
 ```sh
 git clone https://github.com/sg01-stack/project-zero.git
 cd project-zero
-npm test
-npm run build
 npm start
 ```
 
-The complete source page is `index.html`, its stylesheet is `style.css`, and the browser modules are in `src/`. You can also use GitHub's **Code → Download ZIP**, extract it, and run the npm commands from that folder. The committed `dist/app.js` bundles the browser modules so the downloaded page can load without an ES module server; run `npm run build` after editing `src/`.
+`npm start` starts the local backend and opens the browser. `npm run start:headless` starts the same backend without opening a browser. The server binds only to this computer and chooses a free port if port 8000 is occupied. Use the address it prints, on the same machine as your microphone. Node 24.5+ also supports the cloud environment's network proxy automatically. You can alternatively copy `.env.example` to `.env` and set the key there; the browser never receives environment secrets.
 
-### Downloaded page and microphone troubleshooting
+```sh
+npm test
+npm run build
+npm run test:browser
+```
 
-Extract the **entire ZIP** before opening `index.html`; keep `style.css` and the `dist/` folder next to it. The page loads a classic JavaScript bundle because browsers block external ES module imports when opening an HTML file directly from disk. For a single file, open `dist/echosphere.html`. These options provide the local detector; the Evolus agent still needs `npm start` and a server-side API key.
+The complete source page is `index.html`, its stylesheet is `style.css`, and browser modules are in `src/`. `npm run build` generates the committed `dist/app.js` and single-file `dist/echosphere.html`. Rebuild after editing browser source. Build tools and the app use Node's built-in libraries; the optional browser tests need Playwright and Chromium.
 
-Click **Start microphone**, allow access if prompted, and remain quiet for 1.2 seconds. Browsers that remember an existing permission may start capture without asking again. If permission was blocked previously, allow Microphone in the browser's site controls and check your operating system's microphone privacy settings. Missing or busy devices now show a specific message, and missing app files show extraction instructions.
+## If audio does not start
 
-Some browsers or device policies restrict microphone access from local files. In that case, use Node.js 24.5 or newer, run `npm start` in the extracted project folder, and open the local address printed by the server on the same computer as your microphone. An ordinary HTTP page on a remote computer is not a secure microphone context; use the local server or HTTPS.
+- **Microphone permission granted, but startup fails:** open **Microphone diagnostics**. It now identifies the failed step and preserves the browser's error, instead of labelling every `AbortError` as a microphone-device problem.
+- **Worklet module rejected or unavailable:** capture switches automatically to compatibility mode, keeping contiguous 50 ms frames. Compatibility processing runs on the main thread and can lag under heavy browser load. Direct-file pages use this mode without attempting a worklet import.
+- **Audio device aborts:** startup retries once with default audio-processing settings. If that also fails, choose a different input, close other apps using the microphone, and check Windows microphone privacy settings.
+- **Permission request stuck:** click **Cancel microphone request**. Late permission grants are cleaned up, and audio-context/worklet startup has time limits.
+- **Calibration fails:** click **Recalibrate** and remain silent. Use the input meter to check that the selected device receives audio. Calibration input containing speech or strong bursts is deliberately rejected.
+- **Agent unavailable:** launch the full app, enter your key in its setup form, then use **Test agent connection**. That makes a real API request independent of microphone capture and reports its result.
 
-Open the local server on port 8000 in a browser on the **same machine as the microphone**. A remote development container cannot capture your laptop microphone through its own loopback interface. For detector-only local use, download `dist/echosphere.html`, serve its directory with `python3 -m http.server 8000`, and open the served file in your browser. For Evolus integration, use the full project and `npm start`. Microphone capture requires a secure context (localhost or HTTPS) and permission. The standalone file contains all JavaScript and styles; no CDNs or browser speech-recognition services are used.
-
-Wait for “EchoSphere agent found,” then click Start and remain quiet for the first 1.2 seconds. Use headphones if the narrative engine plays audio. Stop/Start recalibrates after changing microphones or environments and begins a new story session. “Play response” uses an installed local voice and stops microphone capture to prevent narration from feeding back into the detector. If no local voice is available, the text remains usable. Loud, variable, or voiced calibration input is rejected instead of quietly learning your speech as noise.
+The microphone never plays through your speakers. **Play response** uses an installed local voice and stops microphone capture before playback to prevent feedback. Stop/Start recalibrates and begins a new story session.
 
 ## What was wrong
 
@@ -40,7 +55,7 @@ Wait for “EchoSphere agent found,” then click Start and remain quiet for the
 
 ## Revised behavior
 
-The AudioWorklet captures **contiguous 50 ms PCM frames**. RMS, peak, crest factor, normalized periodicity, estimated pitch, and spectral bands feed a temporal state machine. Main-thread analysis and UI delivery can still be delayed under browser load; 50 ms framing is not a hard real-time guarantee.
+The AudioWorklet, or its compatibility fallback, captures **contiguous 50 ms PCM frames**. RMS, peak, crest factor, normalized periodicity, estimated pitch, and spectral bands feed a temporal state machine. Main-thread analysis and UI delivery can still be delayed under browser load; 50 ms framing is not a hard real-time guarantee.
 
 | Output | Meaning |
 | --- | --- |
@@ -125,7 +140,7 @@ The browser automatically connects after the backend confirms the agent route. T
 
 The saved Evolus agent’s behavior still applies. During live checks it returned Italian narration, including when the adapter requested English. Set the desired language in the agent’s own instructions if needed; the adapter cannot guarantee that its extra system message overrides the agent configuration. It also cannot independently audit the AMD deployment behind Evolus.
 
-The server exposes only `/api/status`, `/api/turn`, and the browser assets. Status distinguishes a verified agent route from an actual successful completion in the current process. Requests are same-origin, size-limited, validated, and timed out. Credentials never enter the browser. Completed and concurrent retries of a turn ID reuse a cached response; a reused ID with different content is rejected. Failed calls remain retryable, and turns in one session are ordered. The cache retains 256 successful turns; production use needs durable idempotency and persistence.
+The server exposes browser assets plus `/api/health`, `/api/status`, `/api/config`, `/api/check`, and `/api/turn`. The setup and connection-test routes require a per-process setup token and same-origin requests. Status distinguishes a verified agent route from an actual successful completion in the current process. Requests are same-origin, size-limited, validated, and timed out. The backend never returns credentials. Keys entered into the setup form are sent to the local backend, cleared from the input, and never saved in browser storage. Completed and concurrent retries of a turn ID reuse a cached response; a reused ID with different content is rejected. Failed calls remain retryable, and turns in one session are ordered. The cache retains 256 successful turns; production use needs durable idempotency and persistence.
 
 Browser delivery retains failures for the Retry button. Queues disappear on reload, and capture stops at 100 undelivered turns. `Download latest JSON` saves only the currently displayed event. No hardcoded mock reply is shown in normal operation.
 
@@ -153,10 +168,10 @@ Store the turn ID when submitting audio to ASR and return **that same ID**, not 
 
 ## Validation and scope
 
-- `npm test`: 33 passing automated tests cover signal regression cases, 16/44.1/48 kHz features, calibration, clipping, turn summaries, transcript ownership, capture framing, delivery retry/timeouts, the HTTP backend, agent resolution, deduplication, and conversation isolation.
+- `npm test`: 38 passing automated tests cover signal regression cases, 16/44.1/48 kHz features, calibration, clipping, turn summaries, transcript ownership, worklet/compatibility capture framing, delivery retry/timeouts, the HTTP backend, local setup, settings persistence, agent resolution, deduplication, and conversation isolation.
 - `npm run build`: builds `dist/app.js` and the self-contained `dist/echosphere.html` from source. Do not edit generated files by hand.
-- `npm run test:browser`: Playwright/Chromium checks the root and standalone pages with a fake microphone and external module requests blocked. It covers microphone-to-JSON delivery, permission/device errors, startup failures, automatic agent routing with a mock provider, visible replies, mobile layout, and local-voice playback wiring with a mock voice. Direct file navigation is also checked where browser policy permits it; a policy block is explicitly reported as skipped. It never uses live credentials.
-- `npm run test:live`: an explicit, optional live test. It requires the server key, Playwright, and Chromium, and makes one real agent completion. The verified path is fake microphone → AudioWorklet → detector → local HTTP backend → live Evolus agent → browser. It stops capture after the first turn to avoid repeated paid requests. Ordinary tests do not call the live API.
+- `npm run test:browser`: Playwright/Chromium checks the root and standalone pages with a fake microphone and external module requests blocked. It covers microphone-to-JSON delivery with worklet failure forced to `AbortError`, compatibility fallback, permission/device errors, cancellation and late permission cleanup, interrupted-device retries, hung audio startup, local key setup, agent routing with a mock provider, visible replies, mobile layout, and local-voice playback wiring with a mock voice. Direct file navigation is also checked where browser policy permits it; a policy block is explicitly reported as skipped. It never uses live credentials.
+- `npm run test:live`: an explicit, optional live test. It requires the server key, Playwright, and Chromium, and makes one real agent completion. Set `ECHOSPHERE_CAPTURE_MODE=compatibility` to verify the fallback path against the live agent. The verified path is fake microphone → AudioWorklet → detector → local HTTP backend → live Evolus agent → browser. It stops capture after the first turn to avoid repeated paid requests. Ordinary tests do not call the live API.
 
 Browser checks require Playwright to be available to Node and Chromium at `/usr/bin/chromium` (or `CHROMIUM_PATH`). They were available in the cloud workspace and are not app runtime dependencies. The optional `.env` supports local execution; no real key is included in the project or archive.
 

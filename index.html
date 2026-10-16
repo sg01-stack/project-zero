@@ -11,6 +11,11 @@
     <div class="eyebrow">Continuous audio · local processing</div>
     <h1>EchoSphere</h1>
     <p>A stable acoustic signal for your narrative engine. Measures vocal delivery without pretending to read emotion.</p>
+    <section id="launchHelp" class="agent-panel" hidden>
+      <h2>Open the full app</h2>
+      <p>On Windows, close this tab and double-click <strong>Start EchoSphere.cmd</strong> in the extracted folder. It starts EchoSphere and opens the correct browser page. Keep its terminal window open.</p>
+      <p>Install Node.js 22 or newer from nodejs.org if the launcher requests it. On macOS or Linux, run <code>npm start</code> in the project folder. This file can test your microphone, but the agent needs the full app.</p>
+    </section>
     <div class="dashboard">
       <div class="metric"><label>TURN STATE</label><div id="turnStateVal" class="value" role="status">Stopped</div></div>
       <div class="metric"><label>ACOUSTIC STYLE</label><div id="moodVal" class="value">—</div></div>
@@ -20,10 +25,15 @@
       <span>Noise floor: <strong id="noiseVal">—</strong></span>
       <span>Pitch: <strong id="pitchVal">—</strong></span>
     </div>
+    <label for="microphoneSelect">Microphone</label>
+    <select id="microphoneSelect"><option value="">System default microphone</option></select>
+    <div class="actions"><button id="devicesBtn" class="secondary">Refresh microphones</button><button id="recalibrateBtn" class="secondary" disabled>Recalibrate</button></div>
+    <meter id="inputMeter" min="-100" max="0" value="-100" aria-label="Microphone input level"></meter>
     <button id="startBtn" disabled>Start microphone</button>
     <div id="micStatus">Loading microphone controls…</div>
     <p id="notice" role="status">Loading EchoSphere… If this message remains, extract the complete ZIP before opening index.html, or open dist/echosphere.html.</p>
     <noscript><p>Enable JavaScript in your browser to use the microphone.</p></noscript>
+    <details><summary>Microphone diagnostics</summary><pre id="micDiagnostics">No capture attempted yet.</pre></details>
     <h2>Latest event</h2>
     <pre id="jsonLog" aria-label="Latest JSON payload">{"status": "awaiting_session"}</pre>
     <p id="deliveryStatus" role="status">No LLM connected. Audio events and completed turns are available locally.</p>
@@ -35,6 +45,21 @@
       <h2>Your narrative agent</h2>
       <p id="agentStatus" role="status">Checking the EchoSphere agent…</p>
       <button id="connectBtn" class="secondary">Reconnect agent</button>
+      <button id="testAgentBtn" class="secondary" disabled>Test agent connection</button>
+      <details id="agentSetup" hidden>
+        <summary>Connect or change your Evolus key</summary>
+        <form id="agentForm">
+          <label for="apiKeyInput">Evolus API key</label>
+          <input id="apiKeyInput" type="password" autocomplete="off" spellcheck="false" required placeholder="Enter your key on this computer">
+          <label for="agentIdInput">Agent ID</label>
+          <input id="agentIdInput" value="405d18ba-6acf-43cd-9d76-7eddb9710603" required>
+          <label><input id="rememberKey" type="checkbox"> Remember on this computer</label>
+          <p>The key goes only to your local backend and Evolus. Remembering it saves a private settings file in this project folder; it is excluded from Git. Keys saved in the cloud environment do not transfer with a ZIP download.</p>
+          <button id="saveAgentBtn" class="secondary" type="submit">Connect and test agent</button>
+          <p id="setupStatus" role="status"></p>
+        </form>
+      </details>
+      <p id="agentTestStatus" role="status"></p>
       <p>Vocal delivery is sent as JSON after each turn. Words require a separate local speech recognizer; without one, the agent receives acoustic context only.</p>
     </section>
     <h2>Narrative response</h2>

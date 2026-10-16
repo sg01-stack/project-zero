@@ -405,6 +405,30 @@ class EchoSphereCapture extends AudioWorkletProcessor {
 registerProcessor('echosphere-capture', EchoSphereCapture);
 `;
 
+// Compatibility path for browsers that cannot load an AudioWorklet (notably
+// local-file pages). Keep contiguous 50 ms frames; never monitor the mic.
+function createCompatibilityCapture(context, onFrame) {
+  if (!context.createScriptProcessor) throw new Error('Audio processing is unavailable. Launch Start EchoSphere.cmd and use a current browser.');
+  const node = context.createScriptProcessor(2048, 1, 1);
+  let buffer = new Float32Array(Math.round(context.sampleRate * 0.05));
+  let position = 0;
+  const flush = () => {
+    if (position) onFrame(buffer);
+    buffer = new Float32Array(buffer.length); position = 0;
+  };
+  node.onaudioprocess = event => {
+    const input = event.inputBuffer.getChannelData(0);
+    for (let offset = 0; offset < input.length;) {
+      const length = Math.min(input.length - offset, buffer.length - position);
+      buffer.set(input.subarray(offset, offset + length), position);
+      position += length; offset += length;
+      if (position === buffer.length) flush();
+    }
+    for (let i = 0; i < event.outputBuffer.numberOfChannels; i++) event.outputBuffer.getChannelData(i).fill(0);
+  };
+  return { node, flush, close() { node.onaudioprocess = null; node.disconnect(); } };
+}
+
 // Explicit acknowledgement prevents displaying "sent" for a logged payload.
 // Failed turns stay at the head of the queue; retries preserve the turn ID.
 class TurnDispatcher {
@@ -476,6 +500,26 @@ const labels = {
 let context, stream, source, capture, engine;
 let running = false, starting = false, stopping = false, lastPayload = null;
 let flushResolve = null;
+let compatibilityCapture = null, captureMode = null, startupController = null;
+let frameCount = 0, lastAudioAt = 0, captureWatchdog = null;
+let diagnostic = {};
+let setupToken = null, setupPending = false;
+
+function showDiagnostic(values) {
+  diagnostic = { ...diagnostic, ...values };
+  $('micDiagnostics').textContent = JSON.stringify(diagnostic, null, 2);
+}
+
+function bounded(promise, milliseconds, message, signal) {
+  return new Promise((resolve, reject) => {
+    const finish = (fn, value) => { clearTimeout(timer); signal?.removeEventListener('abort', cancel); fn(value); };
+    const cancel = () => finish(reject, new DOMException('Microphone request cancelled.', 'AbortError'));
+    const timer = setTimeout(() => finish(reject, new Error(message)), milliseconds);
+    signal?.addEventListener('abort', cancel, { once: true });
+    promise.then(value => finish(resolve, value), error => finish(reject, error));
+    if (signal?.aborted) cancel();
+  });
+}
 let lastFrameState = null;
 let queuedTurns = 0;
 let transportState = 'not_connected';
@@ -513,6 +557,7 @@ function onTurn(payload) {
 }
 
 function onFrame(frame) {
+  $('inputMeter').value = Math.max(-100, frame.level_dbfs);
   if (lastFrameState !== frame.state) {
     $('turnStateVal').textContent = labels[frame.state];
     lastFrameState = frame.state;
@@ -527,6 +572,24 @@ function onFrame(frame) {
   }
 }
 
+function newEngine() {
+  return new AudioEngine({ onFrame, onTurn, onEvent(payload) {
+    logPayload(payload);
+    window.dispatchEvent(new CustomEvent('echosphere:audio-event', { detail: structuredClone(payload) }));
+  } });
+}
+
+async function refreshMicrophones() {
+  if (!navigator.mediaDevices?.enumerateDevices) return;
+  try {
+    const selected = $('microphoneSelect').value;
+    const devices = (await navigator.mediaDevices.enumerateDevices()).filter(device => device.kind === 'audioinput');
+    $('microphoneSelect').replaceChildren(new Option('System default microphone', ''));
+    devices.forEach((device, index) => $('microphoneSelect').add(new Option(device.label || `Microphone ${index + 1}`, device.deviceId)));
+    if (devices.some(device => device.deviceId === selected)) $('microphoneSelect').value = selected;
+  } catch { $('notice').textContent = 'Microphone list unavailable. Start with the system default, or check browser permission.'; }
+}
+
 async function start() {
   if (running || starting || stopping) return;
   if (queuedTurns >= 100) {
@@ -534,88 +597,141 @@ async function start() {
     return;
   }
   starting = true;
-  $('startBtn').disabled = true;
+  const controller = new AbortController(); startupController = controller;
+  const signal = controller.signal;
+  let stage = 'browser support', permissionTimer;
+  frameCount = 0; captureMode = null; diagnostic = {};
+  $('startBtn').textContent = 'Cancel microphone request';
+  $('microphoneSelect').disabled = true;
   $('notice').textContent = 'Allow microphone access, then remain quiet for 1.2 seconds.';
   $('micStatus').textContent = 'Waiting for microphone permission…';
-  let permissionTimer;
+  showDiagnostic({ page: location.protocol === 'file:' ? 'local file' : location.origin, secure_context: isSecureContext });
   try {
     window.speechSynthesis?.cancel();
-    if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia) {
-      throw new Error('Microphone capture requires localhost or HTTPS. Run npm start and open the local page.');
-    }
-    if (!window.AudioContext) throw new Error('This browser does not support audio capture. Use a current Chrome, Edge, Firefox, or Safari.');
+    if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia) throw new Error('Launch Start EchoSphere.cmd and use the page it opens. Microphone capture needs a local server or HTTPS.');
+    if (!window.AudioContext) throw new Error('Use a current Edge, Chrome, Firefox, or Safari browser.');
     context = new AudioContext();
-    if (!context.audioWorklet) throw new Error('This browser does not support AudioWorklet. Use a current browser.');
-    // Request both during the click. A suspended audio context must not prevent
-    // getUserMedia from displaying its permission prompt.
     const resumed = context.resume().then(() => null, error => error);
+    stage = 'opening microphone';
     permissionTimer = setTimeout(() => {
-      $('notice').textContent = 'Still waiting for microphone access. Check the browser permission prompt or the microphone icon in its address bar.';
+      $('notice').textContent = 'Waiting for permission. Check the microphone icon in the address bar, or cancel and try again.';
     }, 10000);
-    stream = await navigator.mediaDevices.getUserMedia({ audio: {
-      channelCount: { ideal: 1 }, autoGainControl: false, noiseSuppression: false,
-      echoCancellation: true,
-    } });
+    const selected = $('microphoneSelect').value;
+    const acquire = async audio => {
+      const pending = navigator.mediaDevices.getUserMedia({ audio });
+      // Permission can resolve after cancellation/timeout; always close that stream.
+      pending.then(value => { if (signal.aborted) value.getTracks().forEach(track => track.stop()); }, () => {});
+      return bounded(pending, 30000, 'Microphone permission timed out. Check the browser prompt, then try again.', signal);
+    };
+    try {
+      stream = await acquire({ channelCount: { ideal: 1 }, autoGainControl: false, noiseSuppression: false,
+        echoCancellation: true, ...(selected ? { deviceId: { exact: selected } } : {}) });
+    } catch (error) {
+      if (signal.aborted || !['AbortError', 'OverconstrainedError'].includes(error.name)) throw error;
+      showDiagnostic({ device_retry: 'Retrying with browser-default audio processing' });
+      stream = await acquire(selected ? { deviceId: { exact: selected } } : true);
+    }
     clearTimeout(permissionTimer);
+    stage = 'resuming browser audio';
     $('micStatus').textContent = 'Starting audio capture…';
-    const resumeError = await resumed;
+    const resumeError = await bounded(resumed, 5000, 'Browser audio did not start. Launch the full app and check your audio output device.', signal);
     if (resumeError) throw resumeError;
-    engine = new AudioEngine({ onFrame, onTurn, onEvent(payload) {
-      logPayload(payload);
-      window.dispatchEvent(new CustomEvent('echosphere:audio-event', { detail: structuredClone(payload) }));
-    } });
-    const url = URL.createObjectURL(new Blob([WORKLET_SOURCE], { type: 'text/javascript' }));
-    try { await context.audioWorklet.addModule(url); } finally { URL.revokeObjectURL(url); }
-    source = context.createMediaStreamSource(stream);
-    capture = new AudioWorkletNode(context, 'echosphere-capture', { numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [1] });
-    capture.onprocessorerror = () => {
-      $('notice').textContent = 'Audio processing stopped unexpectedly. Restart the microphone before continuing.';
-      void stop();
-    };
-    capture.port.onmessage = ({data}) => {
-      if (data.flushed) { flushResolve?.(); return; }
-      if (running) engine.process(data, context.sampleRate);
-    };
-    running = true;
-    source.connect(capture);
-    capture.connect(context.destination);
-    context.onstatechange = () => {
-      if (running && !stopping && context.state !== 'running') {
-        $('notice').textContent = 'Audio capture was suspended. Stop and restart before continuing; real-time audio timing is no longer guaranteed.';
+    engine = newEngine();
+    const receive = data => {
+      if (!running) return;
+      frameCount++; lastAudioAt = performance.now();
+      try { engine.process(data, context.sampleRate); }
+      catch (error) {
+        showDiagnostic({ error_stage: 'analysing audio', error_name: error.name, error_message: error.message });
+        $('notice').textContent = 'Audio analysis failed. See Microphone diagnostics and restart capture.';
+        void stop();
       }
+    };
+    stage = 'loading audio processor';
+    if (context.audioWorklet && location.protocol !== 'file:') {
+      const url = URL.createObjectURL(new Blob([WORKLET_SOURCE], { type: 'text/javascript' }));
+      try {
+        await bounded(context.audioWorklet.addModule(url), 5000, 'AudioWorklet loading timed out.', signal);
+        capture = new AudioWorkletNode(context, 'echosphere-capture', { numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [1] });
+        capture.port.onmessage = ({ data }) => { if (data.flushed) flushResolve?.(); else receive(data); };
+        capture.onprocessorerror = () => {
+          showDiagnostic({ error_stage: 'audio processor', error_message: 'AudioWorklet stopped unexpectedly' });
+          $('notice').textContent = 'Audio processing stopped. Restart the microphone.';
+          void stop();
+        };
+        captureMode = 'AudioWorklet';
+      } catch (error) {
+        if (signal.aborted) throw error;
+        showDiagnostic({ worklet_error: `${error.name}: ${error.message}`, fallback: 'Compatibility capture' });
+      } finally { URL.revokeObjectURL(url); }
+    }
+    if (!capture) {
+      compatibilityCapture = createCompatibilityCapture(context, receive);
+      capture = compatibilityCapture.node;
+      captureMode = 'Compatibility';
+    }
+    stage = 'connecting microphone';
+    source = context.createMediaStreamSource(stream);
+    running = true; lastAudioAt = performance.now();
+    source.connect(capture); capture.connect(context.destination);
+    const track = stream.getAudioTracks()[0];
+    showDiagnostic({ capture_mode: captureMode, sample_rate: context.sampleRate, device: track?.label || 'System default', audio_context: context.state });
+    context.onstatechange = () => {
+      if (running && !stopping && context.state !== 'running') $('notice').textContent = 'Browser audio paused. Stop and start the microphone to resume.';
     };
     for (const track of stream.getAudioTracks()) track.onended = () => {
       $('notice').textContent = 'The microphone disconnected. Reconnect it, then start again.';
       void stop();
     };
+    captureWatchdog = setInterval(() => {
+      if (running && performance.now() - lastAudioAt > 4000) {
+        showDiagnostic({ error_stage: 'receiving audio', error_message: 'No audio frames for 4 seconds' });
+        $('notice').textContent = 'No audio frames arrived. Select another microphone and start again.';
+        void stop();
+      }
+    }, 1000);
     $('startBtn').textContent = 'Stop microphone';
+    $('recalibrateBtn').disabled = false;
     $('notice').textContent = 'Stay quiet for calibration. Then speak or whisper naturally. Use headphones when your narrative engine plays audio.';
-    $('micStatus').textContent = 'Microphone active · all analysis on this device';
+    $('micStatus').textContent = `Microphone active · ${captureMode === 'Compatibility' ? 'compatibility mode · ' : ''}analysis on this device`;
+    void refreshMicrophones();
   } catch (error) {
+    const cancelled = signal.aborted;
+    controller.abort();
     const hints = {
-      NotAllowedError: 'Microphone access was blocked. Allow Microphone in the browser’s site controls and your operating system’s privacy settings, then try again.',
-      SecurityError: 'Microphone access is disabled in this browser or page. Check its permission settings, or open the app through the local server.',
-      NotFoundError: 'No microphone was found. Connect a microphone and check your system’s selected audio input, then try again.',
-      NotReadableError: 'The microphone could not be opened. Close other apps using it and check your system’s audio input, then try again.',
-      AbortError: 'Microphone startup was interrupted. Check your audio input and try again.',
+      NotAllowedError: 'Allow Microphone in the browser’s site controls and Windows microphone privacy settings, then try again.',
+      NotFoundError: 'No microphone was found. Connect one or choose another input.',
+      NotReadableError: 'Close other apps using the microphone and check your system’s audio input.',
+      AbortError: 'The audio device did not start. Choose another microphone, close apps using it, and launch Start EchoSphere.cmd.',
     };
-    $('notice').textContent = `Could not start: ${hints[error.name] || error.message}`;
-    await releaseAudio();
+    showDiagnostic({ error_stage: stage, error_name: error.name, error_message: error.message });
+    $('notice').textContent = cancelled ? 'Microphone request cancelled. You can try again.'
+      : `Could not start (${stage}): ${hints[error.name] || error.message}`;
     running = false;
+    await releaseAudio();
     $('micStatus').textContent = 'Microphone off';
+    $('startBtn').textContent = 'Start microphone';
   } finally {
     clearTimeout(permissionTimer);
-    starting = false;
+    starting = false; startupController = null;
     $('startBtn').disabled = false;
+    $('microphoneSelect').disabled = running;
   }
 }
 
 async function releaseAudio() {
+  clearInterval(captureWatchdog); captureWatchdog = null;
   source?.disconnect();
+  compatibilityCapture?.close();
   capture?.disconnect();
+  if (capture?.port) capture.port.onmessage = null;
+  if (capture) capture.onprocessorerror = null;
   stream?.getTracks().forEach(track => { track.onended = null; track.stop(); });
-  if (context && context.state !== 'closed') { context.onstatechange = null; await context.close(); }
-  source = null; capture = null; stream = null; context = null;
+  if (context && context.state !== 'closed') {
+    context.onstatechange = null;
+    await bounded(context.close(), 1500, 'Audio context cleanup timed out.').catch(() => {});
+  }
+  source = null; capture = null; stream = null; context = null; compatibilityCapture = null;
 }
 
 async function stop() {
@@ -624,7 +740,8 @@ async function stop() {
   $('startBtn').disabled = true;
   source?.disconnect();
   // Finish PCM already captured before closing the context.
-  if (capture && context?.state === 'running') {
+  if (compatibilityCapture) compatibilityCapture.flush();
+  else if (capture && context?.state === 'running') {
     await new Promise(resolve => {
       const timeout = setTimeout(() => { flushResolve = null; resolve(); }, 300);
       flushResolve = () => { clearTimeout(timeout); flushResolve = null; resolve(); };
@@ -640,13 +757,19 @@ async function stop() {
   $('turnStateVal').textContent = 'Stopped';
   $('moodVal').textContent = '—';
   $('micStatus').textContent = 'Microphone off';
+  $('microphoneSelect').disabled = false;
+  $('recalibrateBtn').disabled = true;
+  $('inputMeter').value = -100;
+  showDiagnostic({ frames_received: frameCount });
   if ($('notice').textContent.startsWith('Stay quiet for calibration.')) {
     $('notice').textContent = 'Microphone stopped. Start again to recalibrate for a new session.';
   }
   stopping = false;
 }
 
-$('startBtn').addEventListener('click', () => running ? void stop() : void start());
+$('startBtn').addEventListener('click', () => starting ? startupController?.abort() : running ? void stop() : void start());
+$('devicesBtn').addEventListener('click', () => void refreshMicrophones());
+$('recalibrateBtn').addEventListener('click', async () => { await stop(); await start(); });
 $('retryBtn').addEventListener('click', () => void dispatcher.retry());
 $('connectBtn').addEventListener('click', () => void connectEvolus());
 $('speakBtn').addEventListener('click', () => void speakReply());
@@ -660,25 +783,36 @@ $('downloadBtn').addEventListener('click', () => {
 window.addEventListener('pagehide', () => { stream?.getTracks().forEach(track => track.stop()); });
 
 async function connectEvolus() {
-  if (connectionPending) return;
+  if (connectionPending) return false;
   if (!['http:', 'https:'].includes(location.protocol)) {
-    $('agentStatus').textContent = 'Open this project with npm start to connect the agent.';
-    return;
+    $('launchHelp').hidden = false;
+    $('agentStatus').textContent = 'The agent needs the local app. Double-click Start EchoSphere.cmd in the extracted folder.';
+    $('connectBtn').disabled = true;
+    return false;
   }
   connectionPending = true;
   $('connectBtn').disabled = true;
-  $('agentStatus').textContent = 'Checking access to your EchoSphere agent…';
+  $('agentStatus').textContent = 'Checking your local backend and EchoSphere agent…';
   try {
     const response = await fetch('/api/status', { signal: AbortSignal.timeout(20000) });
-    if (!response.ok) throw new Error('Start the full project with npm start to connect Evolus.');
+    if (!response.ok || !response.headers.get('content-type')?.includes('application/json')) throw new Error('Launch Start EchoSphere.cmd or npm start and use the page it opens.');
     const status = await response.json();
-    if (!status.configured) throw new Error(status.error || 'The agent is not configured on the server.');
+    if (status.app !== 'EchoSphere') throw new Error('This page is not connected to the EchoSphere backend. Launch the full app.');
+    setupToken = status.setup_token;
+    $('agentSetup').hidden = false;
+    $('agentIdInput').value = status.agent_id;
+    if (!status.configured) {
+      $('agentSetup').open = true;
+      throw new Error(status.error || 'Enter your Evolus key below to connect this computer.');
+    }
     agentReady = true;
+    $('testAgentBtn').disabled = false;
     $('agentStatus').textContent = status.live_connection_verified
-      ? 'EchoSphere agent connected — a response has been received.'
-      : 'EchoSphere agent found. Ready for your next turn.';
+      ? 'EchoSphere agent connected — a real response has been received.'
+      : 'EchoSphere agent found. Test the connection or start speaking.';
     $('deliveryStatus').textContent = 'Completed turns will be sent to your EchoSphere agent.';
-    await dispatcher.setHandler(async payload => {
+    // Attach the handler without blocking setup on previously queued turns.
+    void dispatcher.setHandler(async payload => {
       const resultResponse = await fetch('/api/turn', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload), signal: AbortSignal.timeout(75000),
@@ -686,20 +820,73 @@ async function connectEvolus() {
       const result = await resultResponse.json();
       if (!resultResponse.ok) throw new Error(result.error || `Backend returned HTTP ${resultResponse.status}`);
       if (result.turn_id !== payload.turn_id || typeof result.reply !== 'string') throw new Error('Unexpected agent response.');
-      $('agentReply').textContent = result.reply;
-      spokenReply = result.reply;
-      $('speakBtn').disabled = false;
+      showReply(result.reply);
       $('agentStatus').textContent = 'EchoSphere agent connected — response received.';
       window.dispatchEvent(new CustomEvent('echosphere:response', { detail: result }));
     });
+    return true;
   } catch (error) {
     agentReady = false;
+    $('testAgentBtn').disabled = true;
+    void dispatcher.setHandler(null);
     $('agentStatus').textContent = `Agent unavailable: ${error.message}`;
+    if (!setupToken) $('launchHelp').hidden = false;
+    return false;
   } finally {
     connectionPending = false;
     $('connectBtn').disabled = false;
   }
 }
+
+function showReply(reply) {
+  $('agentReply').textContent = reply;
+  spokenReply = reply;
+  $('speakBtn').disabled = false;
+}
+
+async function testAgent() {
+  if (!setupToken || !agentReady) return;
+  $('testAgentBtn').disabled = true;
+  $('agentTestStatus').textContent = 'Waiting for a real response from your Evolus agent…';
+  try {
+    const response = await fetch('/api/check', {
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'X-EchoSphere-Token': setupToken },
+      body: '{}', signal: AbortSignal.timeout(60000),
+    });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || 'Agent connection test failed.');
+    showReply(result.reply);
+    $('agentTestStatus').textContent = 'Connection verified: a real agent response is shown below. Microphone audio was not needed for this test.';
+    $('agentStatus').textContent = 'EchoSphere agent connected — a real response has been received.';
+  } catch (error) {
+    $('agentTestStatus').textContent = `Connection test failed: ${error.message}`;
+  } finally { $('testAgentBtn').disabled = !agentReady; }
+}
+
+$('testAgentBtn').addEventListener('click', () => void testAgent());
+$('agentForm').addEventListener('submit', async event => {
+  event.preventDefault();
+  if (!setupToken || setupPending) return;
+  setupPending = true; $('saveAgentBtn').disabled = true;
+  $('setupStatus').textContent = 'Checking your key and agent access…';
+  const apiKey = $('apiKeyInput').value.trim();
+  $('apiKeyInput').value = '';
+  try {
+    const response = await fetch('/api/config', {
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'X-EchoSphere-Token': setupToken },
+      body: JSON.stringify({ apiKey, agentId: $('agentIdInput').value.trim(), remember: $('rememberKey').checked }),
+      signal: AbortSignal.timeout(25000),
+    });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || 'Agent configuration failed.');
+    $('setupStatus').textContent = result.remembered ? 'Key saved on this computer.' : 'Key connected for this run. Re-enter it after restarting the server.';
+    if (await connectEvolus()) {
+      if (queuedTurns || dispatcher.running) $('agentTestStatus').textContent = 'Your queued audio is being delivered. Its response will verify the connection.';
+      else await testAgent();
+    }
+  } catch (error) { $('setupStatus').textContent = `Could not connect: ${error.message}`; }
+  finally { setupPending = false; $('saveAgentBtn').disabled = false; }
+});
 
 async function speakReply() {
   if (!spokenReply) return;
@@ -732,11 +919,12 @@ window.echoSphere = Object.freeze({
   connectLocalEndpoint: options => dispatcher.setHandler(createLocalJsonHandler(options)),
   retryDelivery: () => dispatcher.retry(),
   addTranscript: result => engine?.setTranscript(result) || false,
-  getStatus: () => ({ running, agentReady, turnId: engine?.turn?.id || null, queuedTurns, transportState }),
+  getStatus: () => ({ running, starting, captureMode, frameCount, diagnostic: structuredClone(diagnostic), agentReady, turnId: engine?.turn?.id || null, queuedTurns, transportState }),
 });
 $('startBtn').disabled = false;
 $('micStatus').textContent = 'Microphone off';
 $('notice').textContent = 'Start in a quiet room and remain silent for 1.2 seconds to calibrate the noise floor.';
 void connectEvolus();
+void refreshMicrophones();
 
 })();

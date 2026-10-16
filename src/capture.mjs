@@ -32,6 +32,30 @@ class EchoSphereCapture extends AudioWorkletProcessor {
 registerProcessor('echosphere-capture', EchoSphereCapture);
 `;
 
+// Compatibility path for browsers that cannot load an AudioWorklet (notably
+// local-file pages). Keep contiguous 50 ms frames; never monitor the mic.
+export function createCompatibilityCapture(context, onFrame) {
+  if (!context.createScriptProcessor) throw new Error('Audio processing is unavailable. Launch Start EchoSphere.cmd and use a current browser.');
+  const node = context.createScriptProcessor(2048, 1, 1);
+  let buffer = new Float32Array(Math.round(context.sampleRate * 0.05));
+  let position = 0;
+  const flush = () => {
+    if (position) onFrame(buffer);
+    buffer = new Float32Array(buffer.length); position = 0;
+  };
+  node.onaudioprocess = event => {
+    const input = event.inputBuffer.getChannelData(0);
+    for (let offset = 0; offset < input.length;) {
+      const length = Math.min(input.length - offset, buffer.length - position);
+      buffer.set(input.subarray(offset, offset + length), position);
+      position += length; offset += length;
+      if (position === buffer.length) flush();
+    }
+    for (let i = 0; i < event.outputBuffer.numberOfChannels; i++) event.outputBuffer.getChannelData(i).fill(0);
+  };
+  return { node, flush, close() { node.onaudioprocess = null; node.disconnect(); } };
+}
+
 // Explicit acknowledgement prevents displaying "sent" for a logged payload.
 // Failed turns stay at the head of the queue; retries preserve the turn ID.
 export class TurnDispatcher {
