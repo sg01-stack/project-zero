@@ -1,1 +1,53 @@
-
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>EchoSphere · Local audio pipeline</title>
+  <link rel="stylesheet" href="./style.css">
+</head>
+<body>
+  <main>
+    <div class="eyebrow">Continuous audio · local processing</div>
+    <h1>EchoSphere</h1>
+    <p>A stable acoustic signal for your narrative engine. Measures vocal delivery without pretending to read emotion.</p>
+    <div class="dashboard">
+      <div class="metric"><label>TURN STATE</label><div id="turnStateVal" class="value" role="status">Stopped</div></div>
+      <div class="metric"><label>ACOUSTIC STYLE</label><div id="moodVal" class="value">—</div></div>
+    </div>
+    <div class="measurements">
+      <span>Level: <strong id="levelVal">—</strong></span>
+      <span>Noise floor: <strong id="noiseVal">—</strong></span>
+      <span>Pitch: <strong id="pitchVal">—</strong></span>
+    </div>
+    <button id="startBtn">Start microphone</button>
+    <div id="micStatus">Microphone off</div>
+    <p id="notice" role="status">Start in a quiet room and remain silent for 1.2 seconds to calibrate the noise floor.</p>
+    <h2>Latest event</h2>
+    <pre id="jsonLog" aria-label="Latest JSON payload">{"status": "awaiting_session"}</pre>
+    <p id="deliveryStatus" role="status">No LLM connected. Audio events and completed turns are available locally.</p>
+    <div class="actions">
+      <button id="downloadBtn" class="secondary" disabled>Download latest JSON</button>
+      <button id="retryBtn" class="secondary" disabled>Retry delivery</button>
+    </div>
+    <section class="agent-panel" aria-label="Narrative agent">
+      <h2>Your narrative agent</h2>
+      <p id="agentStatus" role="status">Checking the EchoSphere agent…</p>
+      <button id="connectBtn" class="secondary">Reconnect agent</button>
+      <p>Vocal delivery is sent as JSON after each turn. Words require a separate local speech recognizer; without one, the agent receives acoustic context only.</p>
+    </section>
+    <h2>Narrative response</h2>
+    <p id="agentReply" role="status">Speak or whisper, then pause to let the story respond.</p>
+    <button id="speakBtn" class="secondary" disabled>Play response · pauses microphone</button>
+    <p id="playbackStatus" role="status"></p>
+    <details>
+      <summary>How to interpret the detector</summary>
+      <p>A short, isolated attack followed by a rapid decay is a transient candidate. Whisper-like sound must persist and vary over time. Brief consonants and pauses do not immediately change a speech turn's style.</p>
+      <p>Whisper, breath, wind, and background noise can overlap acoustically. Whisper-like is tentative; uncertain audio is reported separately. For dependable word detection, connect a local speech model and pass its transcript with the current turn ID.</p>
+      <p>Analysis uses 50 ms audio frames. Turns finish after 800 ms of silence, or split at 30 seconds. Headphones help prevent narrative playback from entering the microphone.</p>
+      <p>Audio analysis stays on this device. When Evolus is configured on the local backend, completed turn JSON is sent to its remote agent; microphone PCM is not sent. No browser speech recognition is enabled. See the README for configuration and integration.</p>
+    </details>
+  </main>
+  <script type="module" src="./src/app.mjs"></script>
+</body>
+</html>

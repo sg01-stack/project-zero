@@ -1,0 +1,795 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>EchoSphere · Local audio pipeline</title>
+  <style>
+:root { color-scheme: dark; --bg: #090d16; --card: #111827; --accent: #38bdf8; --muted: #a9b6ca; --border: #2a384d; }
+* { box-sizing: border-box; }
+body { margin: 0; padding: 32px 18px; min-height: 100vh; background: var(--bg); color: #f8fafc; font: 15px/1.5 system-ui, sans-serif; }
+main { max-width: 820px; margin: auto; background: var(--card); border: 1px solid var(--border); border-radius: 18px; padding: clamp(20px, 4vw, 36px); }
+h1 { margin: 0; font-size: 30px; color: var(--accent); } h2 { font-size: 16px; margin: 24px 0 10px; }
+p { color: var(--muted); margin: 8px 0 18px; } .eyebrow { font-size: 12px; letter-spacing: .1em; text-transform: uppercase; }
+.dashboard { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin: 24px 0 16px; }
+.metric { background: #0b1220; border: 1px solid var(--border); border-radius: 10px; padding: 16px; }
+.metric label { color: var(--muted); font-size: 12px; } .value { color: var(--accent); font-weight: 650; margin-top: 6px; }
+.measurements { display: flex; flex-wrap: wrap; gap: 12px 24px; color: var(--muted); font-size: 13px; margin: 12px 0 24px; }
+button { background: var(--accent); border: 1px solid transparent; border-radius: 9px; padding: 12px 18px; font: inherit; font-weight: 650; color: #04121e; cursor: pointer; }
+button:hover { filter: brightness(1.1); } button:disabled { opacity: .45; cursor: default; }
+button:focus-visible, summary:focus-visible { outline: 3px solid #e0f2fe; outline-offset: 4px; }
+.secondary { background: transparent; color: #d6e8ff; border-color: var(--border); font-size: 13px; padding: 8px 12px; }
+#startBtn { width: 100%; } #micStatus { color: var(--muted); font-size: 12px; margin-top: 8px; text-align: center; }
+#notice { border-left: 3px solid var(--accent); padding-left: 12px; margin: 20px 0; font-size: 13px; }
+pre { background: #030712; border: 1px solid var(--border); border-radius: 10px; padding: 16px; max-height: 440px; min-height: 130px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; color: #9bdcff; font-size: 12px; }
+.actions { display: flex; gap: 12px; flex-wrap: wrap; } #deliveryStatus { font-size: 13px; }
+.agent-panel { margin-top: 20px; padding: 16px; border: 1px solid var(--border); border-radius: 10px; }
+.agent-panel p { font-size: 13px; margin: 10px 0; }
+.agent-panel label { display: block; margin: 12px 0 6px; }
+select { width: 100%; max-width: 100%; padding: 10px; margin-bottom: 10px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg); color: #f8fafc; font: inherit; }
+details { margin-top: 24px; color: var(--muted); font-size: 13px; } summary { cursor: pointer; color: #e2e8f0; } code { color: #bae6fd; }
+@media (max-width: 480px) { .dashboard { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+  <main>
+    <div class="eyebrow">Continuous audio · local processing</div>
+    <h1>EchoSphere</h1>
+    <p>A stable acoustic signal for your narrative engine. Measures vocal delivery without pretending to read emotion.</p>
+    <div class="dashboard">
+      <div class="metric"><label>TURN STATE</label><div id="turnStateVal" class="value" role="status">Stopped</div></div>
+      <div class="metric"><label>ACOUSTIC STYLE</label><div id="moodVal" class="value">—</div></div>
+    </div>
+    <div class="measurements">
+      <span>Level: <strong id="levelVal">—</strong></span>
+      <span>Noise floor: <strong id="noiseVal">—</strong></span>
+      <span>Pitch: <strong id="pitchVal">—</strong></span>
+    </div>
+    <button id="startBtn">Start microphone</button>
+    <div id="micStatus">Microphone off</div>
+    <p id="notice" role="status">Start in a quiet room and remain silent for 1.2 seconds to calibrate the noise floor.</p>
+    <h2>Latest event</h2>
+    <pre id="jsonLog" aria-label="Latest JSON payload">{"status": "awaiting_session"}</pre>
+    <p id="deliveryStatus" role="status">No LLM connected. Audio events and completed turns are available locally.</p>
+    <div class="actions">
+      <button id="downloadBtn" class="secondary" disabled>Download latest JSON</button>
+      <button id="retryBtn" class="secondary" disabled>Retry delivery</button>
+    </div>
+    <section class="agent-panel" aria-label="Narrative agent">
+      <h2>Your narrative agent</h2>
+      <p id="agentStatus" role="status">Checking the EchoSphere agent…</p>
+      <button id="connectBtn" class="secondary">Reconnect agent</button>
+      <p>Vocal delivery is sent as JSON after each turn. Words require a separate local speech recognizer; without one, the agent receives acoustic context only.</p>
+    </section>
+    <h2>Narrative response</h2>
+    <p id="agentReply" role="status">Speak or whisper, then pause to let the story respond.</p>
+    <button id="speakBtn" class="secondary" disabled>Play response · pauses microphone</button>
+    <p id="playbackStatus" role="status"></p>
+    <details>
+      <summary>How to interpret the detector</summary>
+      <p>A short, isolated attack followed by a rapid decay is a transient candidate. Whisper-like sound must persist and vary over time. Brief consonants and pauses do not immediately change a speech turn's style.</p>
+      <p>Whisper, breath, wind, and background noise can overlap acoustically. Whisper-like is tentative; uncertain audio is reported separately. For dependable word detection, connect a local speech model and pass its transcript with the current turn ID.</p>
+      <p>Analysis uses 50 ms audio frames. Turns finish after 800 ms of silence, or split at 30 seconds. Headphones help prevent narrative playback from entering the microphone.</p>
+      <p>Audio analysis stays on this device. When Evolus is configured on the local backend, completed turn JSON is sent to its remote agent; microphone PCM is not sent. No browser speech recognition is enabled. See the README for configuration and integration.</p>
+    </details>
+  </main>
+  <script type="module">
+// Dependency-free acoustic heuristics. Scores are evidence strengths, not
+// calibrated probabilities; whispering vs breath/noise needs local ASR/VAD.
+const DEFAULTS = Object.freeze({
+  frameMs: 50,
+  calibrationMs: 1200,
+  initialNoiseDb: -65,
+  gateMarginDb: 9,
+  gateReleaseMarginDb: 5,
+  minimumGateDb: -70,
+  candidateMs: 200,
+  endSilenceMs: 800,
+  styleHoldMs: 300,
+  minimumSpeechMs: 250,
+  maxTurnMs: 30000,
+});
+
+const clamp = (x, lo, hi) => Math.max(lo, Math.min(hi, x));
+const db = (x) => 20 * Math.log10(Math.max(x, 1e-8));
+const mean = (xs) => xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : 0;
+const rounded = (x, n = 2) => Number(x.toFixed(n));
+const quantile = (xs, q) => {
+  const sorted = [...xs].sort((a, b) => a - b);
+  return sorted.length ? sorted[Math.floor((sorted.length - 1) * q)] : 0;
+};
+
+function spectrum(samples) {
+  // 512 samples at 16 kHz: 32 ms Hann window; radix-2 FFT.
+  const n = 512;
+  const real = new Float64Array(n);
+  const imag = new Float64Array(n);
+  for (let i = 0; i < n; i++) {
+    real[i] = (samples[i] || 0) * (0.5 - 0.5 * Math.cos(2 * Math.PI * i / (n - 1)));
+  }
+  for (let i = 1, j = 0; i < n; i++) {
+    let bit = n >> 1;
+    for (; j & bit; bit >>= 1) j ^= bit;
+    j ^= bit;
+    if (i < j) [real[i], real[j]] = [real[j], real[i]];
+  }
+  for (let size = 2; size <= n; size *= 2) {
+    for (let start = 0; start < n; start += size) {
+      for (let j = 0; j < size / 2; j++) {
+        const angle = -2 * Math.PI * j / size;
+        const c = Math.cos(angle), s = Math.sin(angle);
+        const a = start + j, b = a + size / 2;
+        const re = real[b] * c - imag[b] * s;
+        const im = real[b] * s + imag[b] * c;
+        real[b] = real[a] - re; imag[b] = imag[a] - im;
+        real[a] += re; imag[a] += im;
+      }
+    }
+  }
+  let total = 0, low = 0, voice = 0, high = 0, logSum = 0, count = 0;
+  for (let i = 1; i < n / 2; i++) {
+    const hz = i * 16000 / n;
+    const power = real[i] ** 2 + imag[i] ** 2 + 1e-18;
+    total += power;
+    if (hz < 250) low += power;
+    if (hz >= 250 && hz <= 6000) voice += power;
+    if (hz >= 1500 && hz <= 6000) high += power;
+    if (hz >= 250 && hz <= 6000) { logSum += Math.log(power); count++; }
+  }
+  return {
+    lowRatio: low / Math.max(total, 1e-18),
+    speechBandRatio: voice / Math.max(total, 1e-18),
+    highRatio: high / Math.max(total, 1e-18),
+    flatness: Math.exp(logSum / count) / Math.max(voice / count, 1e-18),
+  };
+}
+
+function extractFeatures(input, sampleRate, frameMs = DEFAULTS.frameMs) {
+  if (!input?.length || !Number.isFinite(sampleRate) || sampleRate < 8000) {
+    throw new TypeError('Expected PCM samples and a valid sample rate.');
+  }
+  let energy = 0, peak = 0, crossings = 0, clipped = 0;
+  // Remove DC before measuring. Mic offsets otherwise bias the energy gate.
+  const offset = mean(input);
+  for (let i = 0; i < input.length; i++) {
+    const x = input[i] - offset;
+    if (!Number.isFinite(x)) throw new TypeError('PCM samples must be finite.');
+    energy += x * x;
+    peak = Math.max(peak, Math.abs(x));
+    if (Math.abs(input[i]) >= 0.99) clipped++;
+    if (i && (x >= 0) !== (input[i - 1] - offset >= 0)) crossings++;
+  }
+  const rms = Math.sqrt(energy / input.length);
+  // Average source intervals when downsampling, keeping features approximately
+  // comparable at 16/44.1/48 kHz. This is a lightweight analysis resampler.
+  const count = Math.round(input.length * 16000 / sampleRate);
+  const samples = new Float64Array(count);
+  for (let i = 0; i < count; i++) {
+    const start = Math.floor(i * sampleRate / 16000);
+    const end = Math.min(input.length, Math.max(start + 1, Math.floor((i + 1) * sampleRate / 16000)));
+    let sum = 0;
+    for (let j = start; j < end; j++) sum += input[j] - offset;
+    samples[i] = sum / (end - start);
+  }
+  // Normalized autocorrelation on a low-pass version suppresses unvoiced hiss.
+  const voiced = new Float64Array(count);
+  let filtered = 0;
+  const alpha = 1 - Math.exp(-2 * Math.PI * 1200 / 16000);
+  for (let i = 0; i < count; i++) { filtered += alpha * (samples[i] - filtered); voiced[i] = filtered; }
+  let periodicity = 0, bestLag = 0;
+  const correlations = [];
+  for (let lag = 32; lag <= Math.min(228, count >> 1); lag++) {
+    let xy = 0, xx = 0, yy = 0;
+    for (let i = lag; i < count; i++) {
+      const x = voiced[i], y = voiced[i - lag];
+      xy += x * y; xx += x * x; yy += y * y;
+    }
+    correlations[lag] = xy / Math.max(Math.sqrt(xx * yy), 1e-15);
+    if (correlations[lag] > periodicity) { periodicity = correlations[lag]; bestLag = lag; }
+  }
+  // Prefer the first strong local peak to a multiple of the fundamental period.
+  for (let lag = 33; lag < correlations.length - 1; lag++) {
+    if (correlations[lag] >= Math.max(0.65, periodicity * 0.92) &&
+        correlations[lag] > correlations[lag - 1] && correlations[lag] >= correlations[lag + 1]) {
+      bestLag = lag; break;
+    }
+  }
+  return {
+    frameMs, rms, dbfs: db(rms), peakDbfs: db(peak),
+    crestDb: db(peak / Math.max(rms, 1e-8)),
+    zeroCrossingsPerSecond: crossings * sampleRate / input.length,
+    periodicity: clamp(periodicity, 0, 1),
+    pitchHz: periodicity >= 0.65 && rms > 1e-6 ? 16000 / bestLag : null,
+    clippedFraction: clipped / input.length,
+    ...spectrum(samples),
+  };
+}
+
+class AudioEngine {
+  constructor(options = {}) {
+    this.options = { ...DEFAULTS, ...options };
+    this.onFrame = options.onFrame || (() => {});
+    this.onEvent = options.onEvent || (() => {});
+    this.onTurn = options.onTurn || (() => {});
+    this.sessionId = options.sessionId || globalThis.crypto.randomUUID();
+    this.sequence = 0;
+    this.timeMs = 0;
+    this.noiseDb = this.options.initialNoiseDb;
+    this.calibration = [];
+    this.calibrated = this.options.calibrationMs === 0;
+    this.calibrationFailed = false;
+    this.previousDb = this.noiseDb;
+    this.silenceMs = 0;
+    this.activeGate = false;
+    this.resetTurn();
+  }
+
+  resetTurn() {
+    this.turn = null;
+    this.pending = [];
+    this.history = [];
+    this.lastVoicedMs = -Infinity;
+    this.style = null;
+    this.proposedStyle = null;
+    this.proposedMs = 0;
+    this.quietHistory = [];
+    this.silenceMs = 0;
+  }
+
+  process(samples, sampleRate) {
+    return this.push(extractFeatures(samples, sampleRate, this.options.frameMs));
+  }
+
+  push(features) {
+    const f = { ...features, frameMs: this.options.frameMs };
+    this.timeMs += f.frameMs;
+    f.timeMs = this.timeMs;
+    f.onsetDb = f.dbfs - this.previousDb;
+    this.previousDb = f.dbfs;
+    if (!this.calibrated) {
+      this.calibration.push(f);
+      if (this.calibration.length * f.frameMs >= this.options.calibrationMs) {
+        const levels = this.calibration.map(x => x.dbfs);
+        // Reject speech and variable bursts during calibration. A steady loud
+        // environment is also unsuitable for this simple microphone detector.
+        this.calibrationFailed = mean(this.calibration.map(x => x.periodicity > 0.65 ? 1 : 0)) > 0.2 ||
+          quantile(levels, 0.9) - quantile(levels, 0.1) > 12 || quantile(levels, 0.5) > -25;
+        this.noiseDb = clamp(quantile(levels, 0.5), -90, -25);
+        this.calibrated = true;
+      }
+      return this.report(this.calibrationFailed ? 'calibration_needed' : 'calibrating', f);
+    }
+    if (this.calibrationFailed) return this.report('calibration_needed', f);
+
+    const threshold = Math.max(this.options.minimumGateDb,
+      this.noiseDb + (this.activeGate ? this.options.gateReleaseMarginDb : this.options.gateMarginDb));
+    this.activeGate = f.dbfs > threshold;
+    if (this.activeGate) {
+      if (f.periodicity >= 0.65) this.lastVoicedMs = this.timeMs;
+      this.quietHistory = [];
+      this.silenceMs = 0;
+      this.history.push(f);
+      this.history = this.history.filter(x => this.timeMs - x.timeMs < 1000);
+      if (!this.turn) {
+        this.pending.push(f);
+        if (this.pending.length * f.frameMs < this.options.candidateMs) return this.report('candidate', f);
+        const evidence = this.evidence();
+        this.openTurn();
+        for (const p of this.pending) this.accumulate(p, evidence);
+        this.pending = [];
+      } else {
+        this.accumulate(f, this.evidence());
+      }
+      const state = this.style || 'uncertain_audio';
+      const report = this.report(state, f);
+      if (this.timeMs - this.turn.startMs >= this.options.maxTurnMs) this.finish('max_duration', true);
+      return report;
+    }
+
+    this.silenceMs += f.frameMs;
+    // Only adapt on sustained idle frames, never on speech or a turn's pause.
+    if (!this.turn && !this.pending.length) {
+      this.quietHistory.push(f.dbfs);
+      if (this.quietHistory.length >= 20) {
+        this.noiseDb = clamp(this.noiseDb * 0.95 + quantile(this.quietHistory, 0.5) * 0.05, -90, -25);
+        this.quietHistory.shift();
+      }
+    }
+    if (this.pending.length && this.silenceMs >= 150) {
+      const burst = this.pending;
+      const voicedMs = burst.filter(x => x.periodicity >= 0.65).length * f.frameMs;
+      // Sharp attack AND fast decay AND little voicing. High RMS/ZCR alone
+      // are never a transient. Very short voiced words remain uncertain audio.
+      const isTransient = voicedMs === 0 && (burst[0].onsetDb >= 15 || burst.some(x => x.crestDb >= 13));
+      this.emitAudioEvent(isTransient ? 'transient' : 'uncertain_short_audio', burst);
+      this.pending = [];
+      this.history = [];
+      return this.report(isTransient ? 'transient' : 'uncertain_audio', f);
+    }
+    if (this.turn && this.silenceMs >= this.options.endSilenceMs) {
+      this.finish('silence');
+      return this.report('silence', f);
+    }
+    return this.report(this.turn ? 'pause' : this.pending.length ? 'candidate' : 'silence', f);
+  }
+
+  evidence() {
+    const h = this.history;
+    const recent = h.filter(f => this.timeMs - f.timeMs <= 250);
+    const voicedShare = mean(recent.map(f => f.periodicity >= 0.65 ? 1 : 0));
+    if (voicedShare >= 0.34) return { style: 'voiced_speech', score: 0.8 };
+    // Natural speech contains long unvoiced consonants. Require a sustained
+    // absence of voicing before changing an established voiced delivery style.
+    if (this.style === 'voiced_speech' && this.timeMs - this.lastVoicedMs <= 700) {
+      return { style: 'voiced_speech', score: 0.6 };
+    }
+    const span = h.length * this.options.frameMs;
+    const levels = h.map(f => f.dbfs);
+    const modulation = quantile(levels, 0.9) - quantile(levels, 0.1);
+    const breathLike = mean(h.map(f => f.lowRatio)) > 0.55;
+    const speechBand = mean(h.map(f => f.speechBandRatio));
+    const highBand = mean(h.map(f => f.highRatio));
+    // Whisper-like is deliberately a tentative acoustic label. Require
+    // sustained, varying unvoiced sound; stationary fan hiss stays uncertain.
+    if (span >= 350 && modulation >= 3 && modulation <= 25 &&
+        speechBand >= 0.55 && highBand >= 0.15 && !breathLike) {
+      return { style: 'whisper_like', score: 0.55 };
+    }
+    return { style: 'uncertain_audio', score: 0.25 };
+  }
+
+  openTurn() {
+    this.turn = {
+      id: `${this.sessionId}:${++this.sequence}`,
+      startMs: (this.pending[0]?.timeMs ?? this.timeMs) - this.options.frameMs,
+      lastActiveMs: this.timeMs,
+      frames: [], transcript: null,
+      styles: { voiced_speech: 0, whisper_like: 0, uncertain_audio: 0 },
+    };
+  }
+
+  accumulate(f, evidence) {
+    if (!this.style) this.style = evidence.style;
+    if (evidence.style !== this.style) {
+      if (evidence.style !== this.proposedStyle) { this.proposedStyle = evidence.style; this.proposedMs = 0; }
+      this.proposedMs += f.frameMs;
+      // Unknown at an onset may be resolved promptly. Established styles
+      // require a sustained change: a consonant cannot flip speech to whisper.
+      const required = this.style === 'uncertain_audio' ? 100 : this.options.styleHoldMs;
+      if (this.proposedMs >= required) { this.style = evidence.style; this.proposedStyle = null; this.proposedMs = 0; }
+    } else { this.proposedStyle = null; this.proposedMs = 0; }
+    this.turn.styles[this.style] += f.frameMs;
+    this.turn.frames.push({ ...f, style: this.style, evidenceScore: evidence.score });
+    this.turn.lastActiveMs = f.timeMs;
+  }
+
+  // Feed a local ASR's cumulative transcript, not concatenated interim results.
+  // Turn ID is required so delayed results cannot contaminate the next turn.
+  setTranscript({ turnId, text, isFinal = false, source = 'local_asr' }) {
+    if (!this.turn || turnId !== this.turn.id || typeof text !== 'string' || !text.trim()) return false;
+    this.turn.transcript = { text: text.trim(), is_final: Boolean(isFinal), source: String(source) };
+    return true;
+  }
+
+  emitAudioEvent(type, frames) {
+    this.onEvent({
+      schema_version: '1.0', event: 'audio_event', session_id: this.sessionId,
+      event_id: `${this.sessionId}:event:${++this.sequence}`,
+      audio_type: type,
+      start_ms: frames[0].timeMs - this.options.frameMs,
+      end_ms: frames.at(-1).timeMs,
+      peak_dbfs: rounded(Math.max(...frames.map(f => f.peakDbfs))),
+      speech_confirmed: false,
+    });
+  }
+
+  finish(reason = 'manual_stop', continued = false) {
+    const turn = this.turn;
+    if (!turn) {
+      if (this.pending.length) this.emitAudioEvent('uncertain_short_audio', this.pending);
+      this.resetTurn();
+      return null;
+    }
+    const frames = turn.frames;
+    const knownMs = turn.styles.voiced_speech + turn.styles.whisper_like;
+    if (knownMs < this.options.minimumSpeechMs && !turn.transcript) {
+      this.emitAudioEvent('uncertain_audio', frames);
+      this.resetTurn();
+      return null;
+    }
+    const activeMs = frames.length * this.options.frameMs;
+    const dominant = Object.keys(turn.styles).reduce((a, b) => turn.styles[a] >= turn.styles[b] ? a : b);
+    const meanPower = mean(frames.map(f => f.rms ** 2));
+    const pitches = frames.filter(f => f.pitchHz && f.periodicity >= 0.65).map(f => f.pitchHz);
+    const payload = {
+      schema_version: '1.0', event: 'user_turn_complete',
+      session_id: this.sessionId, turn_id: turn.id,
+      timing: { start_ms: turn.startMs, end_ms: turn.lastActiveMs,
+        duration_ms: turn.lastActiveMs - turn.startMs, active_audio_ms: activeMs,
+        end_reason: reason, continues: continued },
+      transcript: turn.transcript,
+      speech_evidence: { source: turn.transcript ? 'acoustic_heuristics_and_asr' : 'acoustic_heuristics',
+        words_available: Boolean(turn.transcript),
+        speech_confirmed_by_asr: Boolean(turn.transcript?.is_final),
+        certainty: dominant === 'voiced_speech' ? 'medium' : 'low' },
+      prosody_analysis: {
+        dominant_style: dominant,
+        style_duration_ms: { ...turn.styles },
+        average_rms_dbfs: rounded(db(Math.sqrt(meanPower))),
+        peak_dbfs: rounded(Math.max(...frames.map(f => f.peakDbfs))),
+        signal_above_noise_db: rounded(db(Math.sqrt(meanPower)) - this.noiseDb),
+        voiced_fraction: rounded(frames.filter(f => f.periodicity >= 0.65).length / frames.length, 3),
+        median_pitch_hz: pitches.length ? rounded(quantile(pitches, 0.5), 1) : null,
+      },
+      quality: { noise_floor_dbfs: rounded(this.noiseDb),
+        clipped: frames.some(f => f.clippedFraction > 0.01),
+        possible_non_speech: dominant !== 'voiced_speech',
+        emotion_inferred: false },
+      llm_guidance: 'Use prosody as tentative delivery context, not emotion or intent. Whisper-like audio may be breath/noise. Never invent words when transcript is null. Do not interpret loudness alone as anger or urgency.',
+    };
+    this.resetTurn();
+    this.onTurn(payload);
+    return payload;
+  }
+
+  report(state, f) {
+    const value = {
+      state, turn_id: this.turn?.id || null, audio_time_ms: this.timeMs,
+      level_dbfs: rounded(f.dbfs), noise_floor_dbfs: rounded(this.noiseDb),
+      pitch_hz: f.pitchHz ? rounded(f.pitchHz, 1) : null,
+      periodicity: rounded(f.periodicity, 3),
+      calibration_failed: this.calibrationFailed,
+    };
+    this.onFrame(value);
+    return value;
+  }
+}
+
+const WORKLET_SOURCE = `
+class EchoSphereCapture extends AudioWorkletProcessor {
+  constructor() {
+    super();
+    this.buffer = new Float32Array(Math.round(sampleRate * 0.05));
+    this.position = 0;
+    this.port.onmessage = ({data}) => {
+      if (data === 'flush') {
+        // Pad only the final partial frame; full frames always contain 50 ms.
+        if (this.position) this.port.postMessage(this.buffer, [this.buffer.buffer]);
+        this.buffer = new Float32Array(Math.round(sampleRate * 0.05));
+        this.position = 0;
+        this.port.postMessage({ flushed: true });
+      }
+    };
+  }
+  process(inputs, outputs) {
+    const input = inputs[0]?.[0];
+    if (input) for (let i = 0; i < input.length; i++) {
+      this.buffer[this.position++] = input[i];
+      if (this.position === this.buffer.length) {
+        this.port.postMessage(this.buffer, [this.buffer.buffer]);
+        this.buffer = new Float32Array(Math.round(sampleRate * 0.05));
+        this.position = 0;
+      }
+    }
+    // Capture only. Do not send microphone audio to the speakers.
+    for (const output of outputs) for (const channel of output) channel.fill(0);
+    return true;
+  }
+}
+registerProcessor('echosphere-capture', EchoSphereCapture);
+`;
+
+// Explicit acknowledgement prevents displaying "sent" for a logged payload.
+// Failed turns stay at the head of the queue; retries preserve the turn ID.
+class TurnDispatcher {
+  constructor(onStatus = () => {}) {
+    this.onStatus = onStatus;
+    this.queue = [];
+    this.handler = null;
+    this.running = false;
+    this.failed = false;
+  }
+  enqueue(payload) {
+    this.queue.push(JSON.parse(JSON.stringify(payload)));
+    this.onStatus({ state: this.handler ? 'queued' : 'not_connected', pending: this.queue.length });
+    void this.drain();
+  }
+  setHandler(handler) {
+    if (handler !== null && typeof handler !== 'function') throw new TypeError('Handler must be a function or null.');
+    this.handler = handler;
+    this.failed = false;
+    return this.drain();
+  }
+  retry() { this.failed = false; return this.drain(); }
+  async drain() {
+    if (this.running || this.failed || !this.handler) return;
+    this.running = true;
+    try {
+      while (this.queue.length && this.handler) {
+        const payload = this.queue[0];
+        this.onStatus({ state: 'sending', turn_id: payload.turn_id, pending: this.queue.length });
+        try {
+          // Do not let a consumer mutate the copy retained for a possible retry.
+          await this.handler(JSON.parse(JSON.stringify(payload)));
+          this.queue.shift();
+          this.onStatus({ state: 'delivered', turn_id: payload.turn_id, pending: this.queue.length });
+        } catch (error) {
+          this.failed = true;
+          this.onStatus({ state: 'failed', turn_id: payload.turn_id, pending: this.queue.length,
+            message: error instanceof Error ? error.message : String(error) });
+          break;
+        }
+      }
+    } finally { this.running = false; }
+  }
+}
+
+function createLocalJsonHandler({ url, timeoutMs = 20000 }) {
+  const endpoint = new URL(url);
+  if (!['http:', 'https:'].includes(endpoint.protocol) ||
+      !['localhost', '127.0.0.1', '[::1]'].includes(endpoint.hostname) || endpoint.username || endpoint.password) {
+    throw new Error('Use a loopback HTTP(S) endpoint for local JSON delivery.');
+  }
+  return async payload => {
+    const response = await fetch(endpoint, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload), signal: AbortSignal.timeout(timeoutMs),
+      redirect: 'error',
+    });
+    if (!response.ok) throw new Error(`Local endpoint returned HTTP ${response.status}`);
+  };
+}
+
+
+const $ = id => document.getElementById(id);
+const labels = {
+  calibrating: 'Calibrating — stay quiet', calibration_needed: 'Calibration failed — restart in a quiet room',
+  candidate: 'Listening to onset…', voiced_speech: 'Voiced speech', whisper_like: 'Whisper-like (tentative)',
+  uncertain_audio: 'Uncertain audio', transient: 'Brief transient', pause: 'Pause — holding turn', silence: 'Listening',
+};
+let context, stream, source, capture, engine;
+let running = false, starting = false, stopping = false, lastPayload = null;
+let flushResolve = null;
+let lastFrameState = null;
+let queuedTurns = 0;
+let transportState = 'not_connected';
+let agentReady = false;
+let connectionPending = false;
+let spokenReply = '';
+
+const dispatcher = new TurnDispatcher(status => {
+  transportState = status.state;
+  queuedTurns = status.pending;
+  const messages = {
+    not_connected: `JSON ready locally; no LLM connected (${status.pending} queued).`,
+    queued: `Queued for the LLM (${status.pending}).`, sending: `Sending ${status.turn_id}…`,
+    delivered: `Narrative response received. ${status.pending} queued.`,
+    failed: `Delivery failed; turn kept for retry: ${status.message}`,
+  };
+  $('deliveryStatus').textContent = messages[status.state];
+  $('retryBtn').disabled = status.state !== 'failed';
+});
+
+function logPayload(payload) {
+  lastPayload = payload;
+  $('jsonLog').textContent = JSON.stringify(payload, null, 2);
+  $('downloadBtn').disabled = false;
+}
+
+function onTurn(payload) {
+  logPayload(payload);
+  window.dispatchEvent(new CustomEvent('echosphere:turn', { detail: structuredClone(payload) }));
+  dispatcher.enqueue(payload);
+  if (queuedTurns >= 100) {
+    $('notice').textContent = '100 turns are queued without delivery. Capture stopped to avoid an unbounded queue; connect your handler or reload to start a new session.';
+    void stop();
+  }
+}
+
+function onFrame(frame) {
+  if (lastFrameState !== frame.state) {
+    $('turnStateVal').textContent = labels[frame.state];
+    lastFrameState = frame.state;
+  }
+  $('moodVal').textContent = frame.state === 'pause' ? 'Holding previous style' : labels[frame.state];
+  $('levelVal').textContent = `${frame.level_dbfs.toFixed(1)} dBFS`;
+  $('noiseVal').textContent = `${frame.noise_floor_dbfs.toFixed(1)} dBFS`;
+  $('pitchVal').textContent = frame.pitch_hz === null ? 'Unvoiced / unknown' : `${frame.pitch_hz.toFixed(0)} Hz (estimate)`;
+  window.dispatchEvent(new CustomEvent('echosphere:frame', { detail: frame }));
+  if (frame.calibration_failed) {
+    $('notice').textContent = 'Calibration contained speech, bursts, or excessive noise. Stop and start again; remain quiet during the first 1.2 seconds.';
+  }
+}
+
+async function start() {
+  if (running || starting || stopping) return;
+  if (queuedTurns >= 100) {
+    $('notice').textContent = 'Deliver the queued turns or reload before starting another capture.';
+    return;
+  }
+  starting = true;
+  $('startBtn').disabled = true;
+  window.speechSynthesis?.cancel();
+  $('notice').textContent = 'Allow microphone access, then remain quiet for 1.2 seconds.';
+  try {
+    if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia) {
+      throw new Error('Microphone capture requires localhost or HTTPS. Run npm start and open the local page.');
+    }
+    context = new AudioContext();
+    // Resume during the click gesture, before awaiting the permission dialog.
+    await context.resume();
+    if (!context.audioWorklet) throw new Error('This browser does not support AudioWorklet. Use a current browser.');
+    stream = await navigator.mediaDevices.getUserMedia({ audio: {
+      channelCount: { ideal: 1 }, autoGainControl: false, noiseSuppression: false,
+      echoCancellation: true,
+    } });
+    engine = new AudioEngine({ onFrame, onTurn, onEvent(payload) {
+      logPayload(payload);
+      window.dispatchEvent(new CustomEvent('echosphere:audio-event', { detail: structuredClone(payload) }));
+    } });
+    const url = URL.createObjectURL(new Blob([WORKLET_SOURCE], { type: 'text/javascript' }));
+    try { await context.audioWorklet.addModule(url); } finally { URL.revokeObjectURL(url); }
+    source = context.createMediaStreamSource(stream);
+    capture = new AudioWorkletNode(context, 'echosphere-capture', { numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [1] });
+    capture.onprocessorerror = () => {
+      $('notice').textContent = 'Audio processing stopped unexpectedly. Restart the microphone before continuing.';
+      void stop();
+    };
+    capture.port.onmessage = ({data}) => {
+      if (data.flushed) { flushResolve?.(); return; }
+      if (running) engine.process(data, context.sampleRate);
+    };
+    running = true;
+    source.connect(capture);
+    capture.connect(context.destination);
+    context.onstatechange = () => {
+      if (running && !stopping && context.state !== 'running') {
+        $('notice').textContent = 'Audio capture was suspended. Stop and restart before continuing; real-time audio timing is no longer guaranteed.';
+      }
+    };
+    for (const track of stream.getAudioTracks()) track.onended = () => {
+      $('notice').textContent = 'The microphone disconnected. Reconnect it, then start again.';
+      void stop();
+    };
+    $('startBtn').textContent = 'Stop microphone';
+    $('notice').textContent = 'Stay quiet for calibration. Then speak or whisper naturally. Use headphones when your narrative engine plays audio.';
+    $('micStatus').textContent = 'Microphone active · all analysis on this device';
+  } catch (error) {
+    $('notice').textContent = `Could not start: ${error.message}`;
+    await releaseAudio();
+    running = false;
+  } finally {
+    starting = false;
+    $('startBtn').disabled = false;
+  }
+}
+
+async function releaseAudio() {
+  source?.disconnect();
+  capture?.disconnect();
+  stream?.getTracks().forEach(track => { track.onended = null; track.stop(); });
+  if (context && context.state !== 'closed') { context.onstatechange = null; await context.close(); }
+  source = null; capture = null; stream = null; context = null;
+}
+
+async function stop() {
+  if (stopping || !running) return;
+  stopping = true;
+  $('startBtn').disabled = true;
+  source?.disconnect();
+  // Finish PCM already captured before closing the context.
+  if (capture && context?.state === 'running') {
+    await new Promise(resolve => {
+      const timeout = setTimeout(() => { flushResolve = null; resolve(); }, 300);
+      flushResolve = () => { clearTimeout(timeout); flushResolve = null; resolve(); };
+      capture.port.postMessage('flush');
+    });
+  }
+  running = false;
+  engine?.finish('manual_stop');
+  await releaseAudio();
+  lastFrameState = null;
+  $('startBtn').textContent = 'Start microphone';
+  $('startBtn').disabled = false;
+  $('turnStateVal').textContent = 'Stopped';
+  $('moodVal').textContent = '—';
+  $('micStatus').textContent = 'Microphone off';
+  if ($('notice').textContent.startsWith('Stay quiet for calibration.')) {
+    $('notice').textContent = 'Microphone stopped. Start again to recalibrate for a new session.';
+  }
+  stopping = false;
+}
+
+$('startBtn').addEventListener('click', () => running ? void stop() : void start());
+$('retryBtn').addEventListener('click', () => void dispatcher.retry());
+$('connectBtn').addEventListener('click', () => void connectEvolus());
+$('speakBtn').addEventListener('click', () => void speakReply());
+$('downloadBtn').addEventListener('click', () => {
+  if (!lastPayload) return;
+  const url = URL.createObjectURL(new Blob([JSON.stringify(lastPayload, null, 2)], { type: 'application/json' }));
+  const anchor = document.createElement('a');
+  anchor.href = url; anchor.download = 'echosphere-payload.json'; anchor.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+});
+window.addEventListener('pagehide', () => { stream?.getTracks().forEach(track => track.stop()); });
+
+async function connectEvolus() {
+  if (connectionPending) return;
+  if (!['http:', 'https:'].includes(location.protocol)) {
+    $('agentStatus').textContent = 'Open this project with npm start to connect the agent.';
+    return;
+  }
+  connectionPending = true;
+  $('connectBtn').disabled = true;
+  $('agentStatus').textContent = 'Checking access to your EchoSphere agent…';
+  try {
+    const response = await fetch('/api/status', { signal: AbortSignal.timeout(20000) });
+    if (!response.ok) throw new Error('Start the full project with npm start to connect Evolus.');
+    const status = await response.json();
+    if (!status.configured) throw new Error(status.error || 'The agent is not configured on the server.');
+    agentReady = true;
+    $('agentStatus').textContent = status.live_connection_verified
+      ? 'EchoSphere agent connected — a response has been received.'
+      : 'EchoSphere agent found. Ready for your next turn.';
+    $('deliveryStatus').textContent = 'Completed turns will be sent to your EchoSphere agent.';
+    await dispatcher.setHandler(async payload => {
+      const resultResponse = await fetch('/api/turn', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload), signal: AbortSignal.timeout(75000),
+      });
+      const result = await resultResponse.json();
+      if (!resultResponse.ok) throw new Error(result.error || `Backend returned HTTP ${resultResponse.status}`);
+      if (result.turn_id !== payload.turn_id || typeof result.reply !== 'string') throw new Error('Unexpected agent response.');
+      $('agentReply').textContent = result.reply;
+      spokenReply = result.reply;
+      $('speakBtn').disabled = false;
+      $('agentStatus').textContent = 'EchoSphere agent connected — response received.';
+      window.dispatchEvent(new CustomEvent('echosphere:response', { detail: result }));
+    });
+  } catch (error) {
+    agentReady = false;
+    $('agentStatus').textContent = `Agent unavailable: ${error.message}`;
+  } finally {
+    connectionPending = false;
+    $('connectBtn').disabled = false;
+  }
+}
+
+async function speakReply() {
+  if (!spokenReply) return;
+  const synth = window.speechSynthesis;
+  if (!synth) { $('playbackStatus').textContent = 'This browser has no speech playback support.'; return; }
+  const voices = synth.getVoices().filter(voice => voice.localService);
+  const voice = voices.find(v => v.lang.startsWith('en')) || voices[0];
+  if (!voice) {
+    $('playbackStatus').textContent = 'No local voice is available in this browser. The response is shown above.';
+    return;
+  }
+  // Playback is explicit, and capture stops so narration cannot become a user turn.
+  if (running) await stop();
+  synth.cancel();
+  const utterance = new SpeechSynthesisUtterance(spokenReply);
+  utterance.voice = voice;
+  utterance.lang = voice.lang;
+  utterance.onend = () => { $('playbackStatus').textContent = 'Playback finished. Start the microphone when you are ready.'; };
+  utterance.onerror = () => { $('playbackStatus').textContent = 'Playback failed. The response is still available as text.'; };
+  $('playbackStatus').textContent = 'Playing locally. Microphone capture is paused.';
+  synth.speak(utterance);
+}
+
+// Register an async handler that resolves only after your server accepts a turn.
+// Keep adapters local. Do not enable browser SpeechRecognition implicitly:
+// it can send microphone audio to a remote speech service.
+window.echoSphere = Object.freeze({
+  start, stop, connectEvolus,
+  setTurnHandler: handler => dispatcher.setHandler(handler),
+  connectLocalEndpoint: options => dispatcher.setHandler(createLocalJsonHandler(options)),
+  retryDelivery: () => dispatcher.retry(),
+  addTranscript: result => engine?.setTranscript(result) || false,
+  getStatus: () => ({ running, agentReady, turnId: engine?.turn?.id || null, queuedTurns, transportState }),
+});
+void connectEvolus();
+
+</script>
+</body>
+</html>
