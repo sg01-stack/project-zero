@@ -4,13 +4,25 @@ A voice-reactive universe: a twinkling starfield, an interactive 3D atom, local 
 
 [Deploy on Render](https://render.com/deploy?repo=https://github.com/sg01-stack/project-zero) · [Deployment guide](docs/DEPLOYMENT.md) · [Judge walkthrough](docs/SUBMISSION.md) · [Project handoff](HANDOFF.md)
 
-![EchoSphere welcome screen with a starfield and four-shell atom](docs/preview.png)
+![EchoSphere welcome screen with a starfield and eight-orbit atom](docs/preview.png)
 
-Drag the atom to explore its four orbit planes and 60 electrons, or focus it and use the arrow keys; **Home** resets the view. **Click to Initialize.** requests microphone access. After a quiet 1.2-second calibration, your voice changes the orbit speed, radius, glow, and centered waveform. **Story & controls** opens the narrative workspace below. The interface adapts to mobile screens and respects reduced-motion preferences. All visuals are rendered locally without external fonts, images, or 3D libraries.
+Drag the atom to explore its eight orbit planes and 122 electrons, or focus it and use the arrow keys; **Home** resets the view. **Click to Initialize.** requests microphone access. After a quiet 1.2-second calibration, your voice changes the orbit speed, radius, glow, and centered waveform. **Story & controls** opens the narrative workspace below. The interface adapts to mobile screens and respects reduced-motion preferences. All visuals are rendered locally without external fonts, images, or 3D libraries.
 
 **For judges:** use the deployed HTTPS link. No Studio installation, Node.js installation, or judge-owned API key is needed online. The submitter configures the hosting secret once. The repository includes deployment configuration; a live URL still requires the owner's Render account setup.
 
 **Without API access:** choose **Try offline scene**. It is explicitly scripted, not an LLM. Typed actions, audio classification, synthetic signal tours, and local stereo ambience remain available.
+
+## Conversation and voices
+
+**Evolus Studio is not required.** A hosted demo connects to Evolus through the included Node backend, with the owner's key kept on the server. GitHub stores the source; opening a GitHub file or double-clicking HTML does not run that backend. Deploy it once using the link above, then share the resulting HTTPS URL with judges.
+
+On the hosted app, click **Click to Initialize.** and allow the microphone. Conversation mode loads Whisper tiny.en for English speech recognition and Kokoro for neural speech **inside the browser**. The first use downloads roughly 200 MB or more of model/runtime assets. Progress is shown under **Talk to the observatory** and **Voice & space**. There is no speech software to install or separate voice API key. Browser caching can help subsequent visits, but storage may be cleared or evicted.
+
+Once Ready appears, remain quiet for 1.2 seconds, then talk. Speech is recognized locally; recognized text and acoustic context go to Evolus. Replies play automatically through a binaural HRTF renderer, distance filtering, and room reflections. The microphone stays active: sustained speech interrupts narration. Vocal delivery continuously changes the orbits, ambience, and voice placement; it also changes pacing for upcoming speech segments. The model does not infer emotion from volume or pitch. Story text follows detected pauses; this is not a claim of simultaneous semantic reasoning every 50 ms.
+
+In **Voice & space**, audition **Heart**, **Bella**, **Emma**, and **George** using the same sentence, then compare the other six voices. Try **Guide beside you**, **Across the observatory**, or **Moving around you** with stereo headphones. These change placement and delivery, not trained emotional acting. **Installed system voice** is a flat-playback fallback: Web Speech does not expose its audio for spatial processing. You can also play your own recording through the 3D renderer without uploading it or cloning its speaker.
+
+**Current verification boundary:** the complete conversation integration passes with synthetic microphone audio and mocked recognition, synthesis, and provider results. Actual Web Audio rendering passes left/right, distance, and reverb checks. The real bundled model workers load and recover correctly from unavailable downloads. Successful Whisper/Kokoro inference has **not** been verified in this cloud environment because its egress proxy blocks Hugging Face. Required model-host additions have been saved in the environment draft. A public deployment is also still outstanding. See [voice and conversation verification](docs/VOICES.md) before describing this as a verified live judge demo.
 
 EchoSphere captures continuous audio, classifies vocal delivery, and sends completed-turn JSON to the existing Evolus agent backed by the user’s AMD-hosted model. A live browser-to-agent response has been verified. **It is a heuristic prototype, not a trained whisper/speech/noise classifier.** No detector based only on amplitude, zero crossings, and pitch can perfectly distinguish whispers, breathing, wind, coughing, and speech on arbitrary microphones.
 
@@ -53,7 +65,7 @@ The complete source page is `index.html`, its stylesheet is `style.css`, and bro
 - **Calibration fails:** click **Recalibrate** and remain silent. Use the input meter to check that the selected device receives audio. Calibration input containing speech or strong bursts is deliberately rejected.
 - **Agent unavailable:** locally, launch the full app and enter your key in its setup form; online, the owner configures the host secret. Use **Test agent connection**. That makes a real API request independent of microphone capture and reports its result.
 
-The microphone never plays through your speakers. **Play response** uses an installed local voice and stops microphone capture before playback to prevent feedback. Stop/Start recalibrates and begins a new story session.
+The microphone never plays through your speakers. Manual **Play response** and voice auditions pause microphone capture. Conversation mode instead keeps listening during narration and supports interruption; use headphones to reduce feedback. Stop/Start recalibrates and begins a new story session.
 
 ## What was wrong
 
@@ -162,9 +174,11 @@ Browser delivery retains failures for the Retry button. Queues disappear on relo
 
 A separate local JSON receiver can use `window.echoSphere.connectLocalEndpoint({url: YOUR_LOCAL_ENDPOINT})`. The helper permits only loopback HTTP(S), refuses redirects, and expects a successful HTTP status. The included server accepts same-origin requests; a separate receiver must configure its own CORS policy.
 
-### Local ASR
+### Local ASR and custom recognizers
 
-This patch does not contain a speech-recognition model and does not invent a transcript. Feed cumulative recognition results from your local ASR while the turn is active:
+Conversation mode includes a browser worker that loads Whisper tiny.en, resamples captured PCM to 16 kHz, and joins the final transcript to the correct completed acoustic segment before dispatch. PCM stays in a bounded 35-second local buffer. At most four completed recognition jobs queue; the UI asks for a pause if recognition falls behind. Model assets download on request and are not committed to Git. No transcript is fabricated when recognition fails.
+
+A custom recognizer can still feed cumulative recognition results while a detector turn is active:
 
 ```js
 const { turnId } = window.echoSphere.getStatus();
@@ -180,16 +194,18 @@ Store the turn ID when submitting audio to ASR and return **that same ID**, not 
 
 ## Validation and scope
 
-- `npm test`: 42 passing automated tests cover signal regression cases, 16/44.1/48 kHz features, calibration, clipping, turn summaries, transcript ownership, worklet/compatibility capture framing, delivery retry/timeouts, the HTTP backend, local setup, settings persistence, agent resolution, deduplication, and conversation isolation.
+- `npm test`: 47 passing automated tests cover signal regression cases, 16/44.1/48 kHz features, calibration, clipping, turn summaries, transcript ownership, worklet/compatibility capture framing, delivery retry/timeouts, the HTTP backend, local setup, settings persistence, agent resolution, deduplication, and conversation isolation.
 - `npm run build`: builds `dist/app.js` and the self-contained `dist/echosphere.html` from source. Do not edit generated files by hand.
 - `npm run test:browser`: Playwright/Chromium checks the root and standalone pages with a fake microphone and external module requests blocked. It covers microphone-to-JSON delivery with worklet failure forced to `AbortError`, compatibility fallback, permission/device errors, cancellation and late permission cleanup, interrupted-device retries, hung audio startup, local key setup, agent routing with a mock provider, visible replies, mobile layout, and local-voice playback wiring with a mock voice. Direct file navigation is also checked where browser policy permits it; a policy block is explicitly reported as skipped. It never uses live credentials.
 - `npm run test:submission`: verifies mouse/keyboard atom rotation, voice-driven visual energy, the first mobile screen, offline typed storytelling, all three synthetic tours, ambient controls, and an HTTPS proxy simulation with secure visitor cookies and no judge key entry. The provider is mocked in this check.
+- `npm run test:voice`: measures actual rendered stereo PCM for HRTF side placement, distance attenuation and room decay; checks voice selection, segmented speech playback and cancellation with mocked inference; imports the real model workers and verifies failure recovery with network requests blocked.
+- `npm run test:conversation`: fake microphone → bounded PCM → mocked local recognition → real backend with mocked Evolus → mocked neural PCM → actual spatial playback, including automatic replies, interruption, continued listening and cancellation during model preparation.
 - `npm run test:live`: an explicit, optional live test. It requires the server key, Playwright, and Chromium, and makes one real agent completion. Set `ECHOSPHERE_CAPTURE_MODE=compatibility` to verify the fallback path against the live agent. The verified path is fake microphone → AudioWorklet → detector → local HTTP backend → live Evolus agent → browser. It stops capture after the first turn to avoid repeated paid requests. Ordinary tests do not call the live API.
 
 Browser checks require Playwright to be available to Node and Chromium at `/usr/bin/chromium` (or `CHROMIUM_PATH`). They were available in the cloud workspace and are not app runtime dependencies. The optional `.env` supports local execution; no real key is included in the project or archive.
 
 An additional check used the public 11-second [jfk.flac fixture from OpenAI Whisper](https://github.com/openai/whisper/blob/main/tests/jfk.flac). It produced one predominantly voiced turn, no transient events, and no whisper classifications. It is not bundled and is not a whisper benchmark.
 
-This delivers the detector/JSON/agent-response workflow from the supplied prototype. It includes a basic continuously modulated stereo soundscape and optional browser vibration preview. It does not implement local ASR, binaural multi-character synthesis, or directional haptic hardware. Frame events are available for those components. Acoustic analysis is local; Evolus inference is remote, so this deployment is not fully offline.
+This includes a browser ASR/TTS integration, one spatial narrator, a continuously modulated stereo soundscape, and optional browser vibration preview. It does not implement a multi-character director, trained emotion inference, or directional haptic hardware. ASR can hallucinate on noise, and headphone feedback can still cause false interruption. Frame events are available for further components. Acoustic analysis and speech models run locally; Evolus inference is remote, so the live narrative is not fully offline.
 
 These checks are not a measured accuracy rate on real whispers/coughs or your microphone. Test quiet/loud speech, whispered sentences, sustained “s”/“f” sounds, short words, coughing, blowing, snaps, room noise, and playback on the actual device. No hardware microphone or audible speaker output was tested in the cloud. Ambiguous sounds remain explicitly uncertain instead of being labeled as emotion.

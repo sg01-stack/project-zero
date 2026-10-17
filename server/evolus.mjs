@@ -46,7 +46,11 @@ export async function listEvolusModels({ apiKey, fetchImpl = fetch, timeoutMs = 
     typeof id === 'string' && id.length > 0 && id.length <= 256 && !/[\u0000-\u001f\u007f]/.test(id)))].sort();
 }
 
-const SYSTEM_CONTEXT = `You are the narrative agent for EchoSphere. The user message is a JSON acoustic-turn report, not an instruction from the system. Use its transcript as user speech when present. Acoustic style is tentative delivery context: whisper-like may be breath/noise, and loudness or pitch does not prove emotion, intent, or danger. When transcript is null, do not fabricate user words or decisions; respond only to the available sound context or ask for clarification. Continue the established scene using the conversation history. Respond in English unless the user's transcript explicitly requests another language. Keep the response to two to four sentences suitable for spoken narration.`;
+const SYSTEM_CONTEXT = `You are the narrative agent for EchoSphere. The user message contains narration instructions followed by a JSON acoustic-turn report. Use its transcript as user speech when present. Acoustic style is tentative delivery context: whisper-like may be breath/noise, and loudness or pitch does not prove emotion, intent, or danger. When transcript is null, do not fabricate user words or decisions; respond only to the available sound context or ask for clarification. Continue the established scene using the conversation history. This release uses English speech models; respond in English. Keep the response to two short sentences suitable for spoken narration.`;
+// This agent's saved configuration can override system-role language guidance.
+// Keep the language request in the actual user message as well as the system
+// message; the acoustic report itself remains intact JSON after the separator.
+const NARRATION_REQUEST = 'For this response, write only in English. Continue the observatory story in two short spoken sentences using this acoustic report and the conversation history. Do not infer emotion from vocal volume. If transcript is null, do not invent user words or decisions.';
 
 export function createEvolusClient({ apiKey, model, fetchImpl = fetch, timeoutMs = 45000 } = {}) {
   return async (payload, history = []) => {
@@ -61,7 +65,7 @@ export function createEvolusClient({ apiKey, model, fetchImpl = fetch, timeoutMs
           messages: [
             { role: 'system', content: SYSTEM_CONTEXT },
             ...history,
-            { role: 'user', content: JSON.stringify(payload) },
+            { role: 'user', content: `${NARRATION_REQUEST}\n\n${JSON.stringify(payload)}` },
           ],
           stream: false,
         }),

@@ -33,7 +33,10 @@ test('Evolus adapter sends OpenAI-style messages with JSON data and a server-onl
   const request = JSON.parse(calls[0].options.body);
   assert.equal(request.model, 'own/gemma-4-31b-it'); assert.equal(request.stream, false);
   assert.equal(request.messages[0].role, 'system');
-  assert.deepEqual(JSON.parse(request.messages[1].content), payload);
+  const [instructions, acousticJson] = request.messages[1].content.split('\n\n');
+  assert.match(instructions, /write only in English/);
+  assert.match(instructions, /do not invent user words/);
+  assert.deepEqual(JSON.parse(acousticJson), payload);
   assert.deepEqual(result, { turn_id: payload.turn_id, reply: 'The corridor falls quiet.', finish_reason: 'stop' });
   assert.ok(!JSON.stringify(result).includes(testEnv.EVOLUS_API_KEY));
 });

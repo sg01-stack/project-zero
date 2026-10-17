@@ -1,4 +1,4 @@
-// Dependency-free 3D projection: four orbit planes, depth-sorted electrons and
+// Dependency-free 3D projection: eight orbit planes, depth-sorted electrons and
 // a draggable global rotation. Acoustic frames modulate the animation locally.
 export class AtomExperience {
   constructor({ stars, atom, waveform }) {
@@ -14,6 +14,10 @@ export class AtomExperience {
       { radius: 94, tilt: 1.05, turn: 0.65, count: 8, color: '#a1caff' },
       { radius: 124, tilt: 1.6, turn: -0.4, count: 18, color: '#b7a0ff' },
       { radius: 155, tilt: 0.85, turn: -1.0, count: 32, color: '#76e6ff' },
+      { radius: 78, tilt: 1.9, turn: 1.25, count: 6, color: '#ffb7d7' },
+      { radius: 108, tilt: 0.65, turn: -1.8, count: 12, color: '#a2f4df' },
+      { radius: 138, tilt: 2.2, turn: 0.8, count: 20, color: '#d5b6ff' },
+      { radius: 164, tilt: 1.3, turn: 1.7, count: 24, color: '#8bbdff' },
     ];
     atom.addEventListener('pointerdown', event => {
       if (event.button !== 0) return;
@@ -53,7 +57,7 @@ export class AtomExperience {
       : Math.max(0, Math.min(1, (frame.level_dbfs + 65) / 45));
   }
   setActive(value) { this.active = value; if (!value) this.target = 0; }
-  getState() { return { shells: 4, electrons: 60, rotation: { ...this.rotation }, energy: this.energy, active: this.active }; }
+  getState() { return { shells: this.shells.length, electrons: this.shells.reduce((sum, shell) => sum + shell.count, 0), rotation: { ...this.rotation }, energy: this.energy, active: this.active }; }
   surface(canvas) {
     const { width, height } = canvas.getBoundingClientRect();
     const ratio = Math.min(devicePixelRatio || 1, 2);
@@ -97,9 +101,9 @@ export class AtomExperience {
         items.push({ type: 'line', a, b, z: (a.z + b.z) / 2, color: shell.color });
       }
       for (let electron = 0; electron < shell.count; electron++) {
-        const angle = electron / shell.count * Math.PI * 2 + this.phase * (index % 2 ? -1 : 1) * (1.4 - index * 0.18);
+        const angle = electron / shell.count * Math.PI * 2 + this.phase * (index % 2 ? -1 : 1) * (1.4 - index * 0.1);
         const point = project(this.orbit(shell, angle));
-        items.push({ type: 'electron', ...point, color: shell.color, radius: 2.1 + (3 - index) * 0.25 });
+        items.push({ type: 'electron', ...point, color: shell.color, radius: 2.1 + (3 - index % 4) * 0.25 });
       }
     });
     // Small spatial cluster at the nucleus, rather than a flat centre icon.
@@ -135,7 +139,8 @@ export class AtomExperience {
       const envelope = Math.sin(x / width * Math.PI) ** 1.8;
       const movement = this.reducedMotion ? 0 : time * (2 + this.energy * 3);
       const wave = Math.sin(x * 0.095 - movement) * Math.sin(x * 0.032 + movement * 0.4);
-      const y = height / 2 + wave * envelope * (5 + this.energy * 17);
+      const amplitude = Math.min(height / 2 - 5, 16 + this.energy * 24);
+      const y = height / 2 + wave * envelope * amplitude;
       if (x === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
     }
     ctx.stroke(); ctx.shadowBlur = 0;

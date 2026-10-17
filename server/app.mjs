@@ -157,7 +157,7 @@ export function createApplicationServer({ root, env = process.env, completeTurn,
       if (pathname.startsWith('/api/')) return json(res, 404, { error: 'Unknown API route or method.' });
       if (!['GET', 'HEAD'].includes(req.method)) { res.writeHead(405); return res.end(); }
       const allowed = pathname === '/' || pathname === '/index.html' || pathname === '/style.css' || pathname === '/dist/echosphere.html' ||
-        ['/dist/app.js', '/src/app.mjs', '/src/audio-engine.mjs', '/src/capture.mjs', '/src/experience.mjs', '/src/visuals.mjs'].includes(pathname);
+        ['/dist/app.js', '/src/app.mjs', '/src/audio-engine.mjs', '/src/capture.mjs', '/src/experience.mjs', '/src/visuals.mjs', '/src/voice.mjs', '/src/conversation.mjs', '/src/neural-worker.mjs', '/src/asr-worker.mjs', '/vendor/kokoro.web.js', '/vendor/transformers.web.js'].includes(pathname);
       const path = resolve(root, '.' + (pathname === '/' ? '/index.html' : pathname));
       if (!allowed || !path.startsWith(root.endsWith(sep) ? root : root + sep)) { res.writeHead(404); return res.end('Not found'); }
       const data = await readFile(path);

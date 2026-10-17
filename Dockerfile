@@ -11,6 +11,7 @@ WORKDIR /app
 COPY --from=build /app/index.html /app/style.css /app/package.json ./
 COPY --from=build /app/dist ./dist
 COPY --from=build /app/src ./src
+COPY vendor ./vendor
 COPY server ./server
 COPY scripts/serve.mjs scripts/runtime.mjs ./scripts/
 RUN chmod -R a+rX /app

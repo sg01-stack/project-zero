@@ -52,6 +52,7 @@ try {
   // Exercise both the source page and the actual downloadable single file.
   for (const { path, compatibility } of [{ path: '/' }, { path: '/dist/echosphere.html' }, { path: '/', compatibility: true }]) {
     await page.goto(`http://127.0.0.1:${port}${path}`);
+    await page.locator('#conversationToggle').uncheck();
     if (compatibility) await page.evaluate(() => { AudioWorklet.prototype.addModule = async () => { throw new DOMException('Unable to load worklet module', 'AbortError'); }; });
     await page.evaluate(() => {
       window.testTurns = []; window.testDelivered = [];
@@ -204,6 +205,7 @@ try {
     }});
     Object.defineProperty(window, 'SpeechSynthesisUtterance', { configurable: true, value: class { constructor(text) { this.text = text; } } });
   });
+  await page.locator('#voiceEngine').selectOption('system');
   await page.getByRole('button', { name: 'Play response · pauses microphone', exact: true }).click();
   assert.equal(await page.evaluate(() => window.testSpoken), 'Mock narrative response through the backend.');
   console.log('PASS local-voice playback integration (mock voice; hardware sound not tested)');

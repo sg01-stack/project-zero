@@ -22,7 +22,7 @@ pre { background: #030712; border: 1px solid var(--border); border-radius: 10px;
 .agent-panel p { font-size: 13px; margin: 10px 0; }
 .agent-panel label { display: block; margin: 12px 0 6px; }
 select { width: 100%; max-width: 100%; padding: 10px; margin-bottom: 10px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg); color: #f8fafc; font: inherit; }
-input:not([type="checkbox"]) { width: 100%; padding: 10px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg); color: #f8fafc; font: inherit; }
+input:not([type="checkbox"]):not([type="range"]) { width: 100%; padding: 10px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg); color: #f8fafc; font: inherit; }
 input:focus-visible, select:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
 meter { display: block; width: 100%; height: 18px; margin: 12px 0; }
 [hidden] { display: none !important; }
@@ -56,13 +56,13 @@ details { margin-top: 24px; color: var(--muted); font-size: 13px; } summary { cu
 #atomCanvas:focus-visible { outline: 1px solid #9c8aca; outline-offset: 10px; }
 .orbit-hint { position: absolute; left: 50%; bottom: -16px; transform: translateX(-50%); width: max-content; font-size: 9px; letter-spacing: .16em; color: #8b879f; margin: 0; pointer-events: none; }
 .orbit-hint span { padding: 0 7px; }
-#welcomeTitle { margin: clamp(60px, 15svh, 2in) 0 10px; font-size: clamp(26px, 3vw, 40px); line-height: 1.2; font-weight: 350; letter-spacing: -.025em; text-align: center; color: #f0eaff; }
+#welcomeTitle { margin: clamp(60px, 15svh, 2in) 0 10px; font-size: clamp(26px, 3vw, 40px); line-height: 1.2; font-weight: 700; letter-spacing: -.025em; text-align: center; color: #f0eaff; }
 .hero-story { color: #a7a0ba; font-size: 12px; letter-spacing: .035em; text-decoration: none; text-align: center; }
 .hero-story span { margin-left: 5px; }
 .initialize-zone { display: flex; flex-direction: column; align-items: center; margin-top: 14px; width: 100%; }
 .initialize-button { display: flex; flex-direction: column; align-items: center; background: transparent; color: #eee8ff; border: 0; border-radius: 8px; font-size: 13px; font-weight: 400; letter-spacing: .13em; padding: 0 16px 8px; }
 .initialize-button:hover { color: white; filter: none; text-shadow: 0 0 22px #ab8dff; }
-#voiceWave { display: block; width: 2in; height: 48px; margin-bottom: 7px; }
+#voiceWave { display: block; width: 2in; height: 86px; margin-bottom: 7px; }
 #heroStatus { text-align: center; max-width: 600px; min-height: 18px; margin: 6px 0 0; font-size: 11px; color: #9690ac; }
 a:focus-visible { outline: 2px solid #c7b7ff; outline-offset: 5px; }
 @media (max-width: 480px) {
@@ -74,3 +74,15 @@ a:focus-visible { outline: 2px solid #c7b7ff; outline-offset: 5px; }
   #welcomeTitle { margin-top: clamp(65px, 13svh, 120px); }
 }
 @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+.voice-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 20px; }
+.voice-grid > div { min-width: 0; }
+.voice-studio input[type="range"] { width: 100%; accent-color: var(--accent); min-height: 32px; cursor: pointer; }
+.voice-studio output { float: right; color: #d7caff; font-variant-numeric: tabular-nums; }
+.voice-studio fieldset { border: 1px solid var(--border); border-radius: 9px; padding: 12px 16px; margin: 16px 0 0; }
+.voice-studio legend { color: #d7caff; padding: 0 8px; font-size: 12px; }
+.voice-position { display: flex; align-items: center; justify-content: center; gap: 12px; color: var(--muted); font-size: 10px; }
+.position-field { position: relative; width: 86px; height: 86px; border-radius: 50%; border: 1px solid #4c4265; }
+.position-field b { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); font-weight: 400; }
+#voiceDot { position: absolute; top: 18%; left: 32%; width: 7px; height: 7px; border-radius: 50%; background: #c5b3ff; box-shadow: 0 0 12px #baa2ff; }
+#voiceFile { margin: 10px 0; }
+@media (max-width: 560px) { .voice-grid { grid-template-columns: 1fr; } }

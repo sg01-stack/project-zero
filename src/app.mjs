@@ -1,5 +1,7 @@
 import { OfflineStory, SceneAudio, sceneControls, tourFrame } from './experience.mjs';
 import { AtomExperience } from './visuals.mjs';
+import { VOICE_PRESETS, voicePosition, speechSegments, SpatialVoice, NeuralVoice } from './voice.mjs';
+import { SpeechRecognizer, SpeechBuffer, vocalDelivery } from './conversation.mjs';
 import { AudioEngine } from './audio-engine.mjs';
 import { WORKLET_SOURCE, TurnDispatcher, createLocalJsonHandler, createCompatibilityCapture } from './capture.mjs';
 
@@ -45,6 +47,23 @@ let lastVibration = 0;
 const offlineStory = new OfflineStory();
 const sceneAudio = new SceneAudio();
 const textSession = crypto.randomUUID();
+let voiceBusy = false, speechRun = 0, voiceMotion = 'still', recordingFile = null;
+const spatialVoice = new SpatialVoice(position => {
+  const radius = Math.min(42, 18 + position.distance * 2);
+  const angle = position.angle * Math.PI / 180;
+  $('voiceDot').style.left = `${50 + Math.sin(angle) * radius}%`;
+  $('voiceDot').style.top = `${50 - Math.cos(angle) * radius}%`;
+});
+const neuralVoice = new NeuralVoice(message => { $('voiceStatus').textContent = message; });
+const recognizer = new SpeechRecognizer(message => { $('conversationStatus').textContent = message; });
+const speechBuffer = new SpeechBuffer();
+let conversationRequested = false, conversationActive = false, preparingConversation = false, conversationEpoch = 0;
+let recognitionChain = Promise.resolve(), recognitionPending = 0, interactionVersion = 0, pendingVoice = null, bargeMs = 0, barged = false, interruptions = 0;
+let deliveryProfile = { intensity: 0.3, soft: false };
+const turnVersions = new Map();
+const neuralChoices = [['af_heart', 'Heart · American'], ['af_bella', 'Bella · American'], ['af_nicole', 'Nicole · American'],
+  ['af_sarah', 'Sarah · American'], ['am_michael', 'Michael · American'], ['am_fenrir', 'Fenrir · American'],
+  ['bf_emma', 'Emma · British'], ['bf_isabella', 'Isabella · British'], ['bm_george', 'George · British'], ['bm_fable', 'Fable · British']];
 
 function setNarrativeMode(mode, help) {
   narrativeMode = mode;
@@ -58,6 +77,7 @@ function useOfflineScene() {
   void dispatcher.setHandler(async payload => {
     const reply = offlineStory.reply(payload);
     showReply(reply, 'Offline scripted scene · no LLM');
+    offerAutomaticReply(reply, payload.turn_id);
     window.dispatchEvent(new CustomEvent('echosphere:response', { detail: { turn_id: payload.turn_id, reply, source: 'offline_script' } }));
   });
   if (!lastPayload) showReply(offlineStory.reply({ transcript: null }), 'Offline scripted scene · no LLM');
@@ -85,6 +105,32 @@ function logPayload(payload) {
 }
 
 function onTurn(payload) {
+  if (conversationRequested && payload.event === 'user_turn_complete') {
+    if (!recognizer.ready || !conversationActive) { $('conversationStatus').textContent = 'Conversation is preparing or paused. Wait for Ready before speaking.'; return; }
+    const pcm = speechBuffer.between(payload.timing.start_ms, payload.timing.end_ms);
+    const epoch = conversationEpoch, version = ++interactionVersion;
+    if (recognitionPending >= 4) { $('conversationStatus').textContent = 'Speech recognition is catching up. Pause briefly, or type your action below.'; return; }
+    recognitionPending++;
+    recognitionChain = recognitionChain.then(async () => {
+      if (epoch !== conversationEpoch) return;
+      $('conversationStatus').textContent = 'Understanding your words locally…';
+      const result = await recognizer.transcribe(pcm);
+      if (epoch !== conversationEpoch) return;
+      if (!result.text.trim()) { $('conversationStatus').textContent = 'No words recognized. Please repeat, or type your action.'; return; }
+      payload.transcript = { text: result.text, source: 'local_whisper_tiny_en', is_final: true };
+      payload.speech_evidence = { ...payload.speech_evidence, words_available: true, speech_confirmed_by_asr: true, source: 'acoustic_heuristics_and_asr' };
+      $('transcriptText').textContent = result.text;
+      $('conversationStatus').textContent = conversationActive ? 'Words recognized. The narrator is responding; you can keep speaking.' : 'Words recognized. A text response will arrive; conversation playback is paused.';
+      submitTurn(payload, version);
+    }).catch(error => { if (epoch === conversationEpoch) $('conversationStatus').textContent = `${error.message} You can still type a story action.`; })
+      .finally(() => { recognitionPending--; });
+    return;
+  }
+  submitTurn(payload, ++interactionVersion);
+}
+function submitTurn(payload, version) {
+  turnVersions.set(payload.turn_id, version);
+  if (turnVersions.size > 100) turnVersions.delete(turnVersions.keys().next().value);
   logPayload(payload);
   window.dispatchEvent(new CustomEvent('echosphere:turn', { detail: structuredClone(payload) }));
   dispatcher.enqueue(payload);
@@ -94,10 +140,31 @@ function onTurn(payload) {
   }
 }
 
+function offerAutomaticReply(text, turnId) {
+  const version = turnVersions.get(turnId);
+  if (conversationActive && version === interactionVersion) pendingVoice = { text, version };
+}
+
 function onFrame(frame) {
   visuals.react(frame);
   const controls = sceneControls(frame);
   sceneAudio.update(controls);
+  deliveryProfile = vocalDelivery(frame, deliveryProfile);
+  if (conversationActive) {
+    spatialVoice.modulate(deliveryProfile);
+    const speaking = ['voiced_speech', 'whisper_like'].includes(frame.state);
+    if (speaking && (voiceBusy || pendingVoice || transportState === 'sending')) {
+      bargeMs += 50;
+      if (bargeMs >= 300 && !barged) {
+        barged = true; interactionVersion++; interruptions++; pendingVoice = null;
+        void stopNarration(true);
+        $('conversationStatus').textContent = 'Listening to you. Narration interrupted; the microphone stays active.';
+      }
+    } else if (!speaking) { bargeMs = 0; barged = false; }
+    if (pendingVoice && pendingVoice.version === interactionVersion && ['silence', 'calibrating'].includes(frame.state) && !voiceBusy) {
+      const reply = pendingVoice.text; pendingVoice = null; void playNarration(reply, null, true);
+    }
+  }
   $('sceneStatus').textContent = `Scene intensity: ${Math.round(controls.intensity * 100)}% · stereo position: ${controls.pan < 0 ? 'left' : controls.pan > 0 ? 'right' : 'centre'}. ${sceneAudio.context ? 'Ambient audio on.' : 'Sound off.'}`;
   if ($('hapticsToggle').checked && navigator.vibrate && controls.intensity > 0.35 && performance.now() - lastVibration > 600) {
     navigator.vibrate(Math.round(15 + controls.intensity * 35)); lastVibration = performance.now();
@@ -123,7 +190,68 @@ function newEngine() {
   return new AudioEngine({ onFrame, onTurn, onEvent(payload) {
     logPayload(payload);
     window.dispatchEvent(new CustomEvent('echosphere:audio-event', { detail: structuredClone(payload) }));
+    if (conversationActive && ['uncertain_short_audio', 'uncertain_audio'].includes(payload.audio_type)) {
+      const pcm = speechBuffer.between(payload.start_ms, payload.end_ms);
+      if (pcm.length >= 1600) {
+        const rms = Math.sqrt(pcm.reduce((sum, value) => sum + value * value, 0) / pcm.length);
+        onTurn({ schema_version: '1.0', event: 'user_turn_complete', session_id: payload.session_id, turn_id: `asr:${payload.event_id}`,
+          timing: { start_ms: payload.start_ms, end_ms: payload.end_ms, end_reason: 'uncertain_audio_check' }, transcript: null,
+          prosody_analysis: { dominant_style: 'uncertain_audio', average_rms_dbfs: 20 * Math.log10(Math.max(1e-10, rms)), peak_dbfs: payload.peak_dbfs },
+          quality: { emotion_inferred: false, possible_non_speech: true },
+          llm_guidance: 'The acoustic detector was uncertain. Speech recognition can be mistaken; do not infer emotion from this sound.' });
+      }
+    }
   } });
+}
+
+async function initializeExperience() {
+  if (!$('conversationToggle').checked) return start();
+  if (preparingConversation) return;
+  if (!['http:', 'https:'].includes(location.protocol)) {
+    $('heroStatus').textContent = 'This standalone file is a visual preview. Conversation needs the hosted app or Start EchoSphere.cmd.';
+    $('launchHelp').hidden = false; $('workspace').scrollIntoView({ behavior: 'smooth' }); return;
+  }
+  preparingConversation = true; conversationRequested = true; conversationActive = false;
+  const epoch = ++conversationEpoch; interactionVersion++; pendingVoice = null;
+  if (recognizer.pending) recognizer.cancel();
+  $('conversationStatus').textContent = 'Starting microphone and checking narration…';
+  const microphone = start();
+  // Audio activation belongs to this user gesture, before any model downloads.
+  const output = spatialVoice.unlock().then(() => null, error => error);
+  if (!$('ambienceToggle').dataset.userChoice) {
+    $('ambienceToggle').checked = true;
+    void sceneAudio.enable().catch(() => { $('ambienceToggle').checked = false; });
+  }
+  try {
+    await microphone; const audioError = await output; if (audioError) throw audioError;
+    if (!running || epoch !== conversationEpoch) return;
+    while (connectionPending) await new Promise(resolve => setTimeout(resolve, 100));
+    if (narrativeMode === 'waiting') throw new Error('The narrator is not connected. Configure Evolus in Your narrative agent, or explicitly choose the offline scripted scene. Evolus Studio is not required.');
+    $('voiceEngine').value = 'neural'; refreshVoices();
+    $('initializeLabel').textContent = 'Preparing conversation. Click to Stop.';
+    $('heroStatus').textContent = 'Downloading speech models into this browser. Progress is in Story & controls.';
+    $('conversationStatus').textContent = 'Loading local speech recognition and neural voices. First use downloads roughly 200 MB or more; do not speak until Ready.';
+    await Promise.all([recognizer.load(), neuralVoice.load()]);
+    if (!running || epoch !== conversationEpoch) return;
+    conversationActive = true; engine = newEngine(); speechBuffer.clear(); lastFrameState = null;
+    $('initializeLabel').textContent = 'Listening. Click to Pause.';
+    $('conversationStatus').textContent = `Ready · ${narrativeMode === 'live' ? 'live Evolus narration' : 'offline scripted scene'}. Stay quiet for 1.2 seconds, then speak. Responses play automatically; speak to interrupt.`;
+  } catch (error) {
+    if (epoch === conversationEpoch) {
+      const message = `Conversation could not start: ${error.message}`;
+      await stop();
+      if (recognizer.pending) recognizer.cancel();
+      if (neuralVoice.pending) neuralVoice.cancel();
+      $('conversationStatus').textContent = message; $('heroStatus').textContent = message;
+    }
+  } finally {
+    preparingConversation = false;
+    if (!running) {
+      conversationRequested = false;
+      await spatialVoice.close();
+      if (!$('ambienceToggle').dataset.userChoice) { await sceneAudio.disable(); $('ambienceToggle').checked = false; }
+    }
+  }
 }
 
 async function refreshMicrophones() {
@@ -144,6 +272,7 @@ async function start() {
     return;
   }
   starting = true;
+  void stopNarration();
   const controller = new AbortController(); startupController = controller;
   const signal = controller.signal;
   let stage = 'browser support', permissionTimer;
@@ -186,10 +315,11 @@ async function start() {
     const resumeError = await bounded(resumed, 5000, 'Browser audio did not start. Launch the full app and check your audio output device.', signal);
     if (resumeError) throw resumeError;
     engine = newEngine();
+    speechBuffer.clear();
     const receive = data => {
       if (!running) return;
       frameCount++; lastAudioAt = performance.now();
-      try { engine.process(data, context.sampleRate); }
+      try { if (conversationRequested) speechBuffer.push(data, context.sampleRate, engine.timeMs + 50); engine.process(data, context.sampleRate); }
       catch (error) {
         showDiagnostic({ error_stage: 'analysing audio', error_name: error.name, error_message: error.message });
         $('notice').textContent = 'Audio analysis failed. See Microphone diagnostics and restart capture.';
@@ -289,7 +419,7 @@ async function releaseAudio() {
   source = null; capture = null; stream = null; context = null; compatibilityCapture = null;
 }
 
-async function stop() {
+async function stop({ preservePlayback = false } = {}) {
   if (stopping || !running) return;
   stopping = true;
   $('startBtn').disabled = true;
@@ -305,6 +435,11 @@ async function stop() {
   }
   running = false;
   engine?.finish('manual_stop');
+  if (conversationRequested) { void sceneAudio.disable(); $('ambienceToggle').checked = false; }
+  conversationActive = false; conversationRequested = false; pendingVoice = null;
+  $('conversationStatus').textContent = 'Conversation paused. Initialize to resume.';
+  if (!preservePlayback) void stopNarration();
+  if (preparingConversation) { conversationEpoch++; recognizer.cancel(); }
   await releaseAudio();
   lastFrameState = null;
   $('startBtn').textContent = 'Start microphone';
@@ -326,7 +461,7 @@ async function stop() {
 }
 
 $('startBtn').addEventListener('click', () => starting ? startupController?.abort() : running ? void stop() : void start());
-$('initializeBtn').addEventListener('click', () => starting ? startupController?.abort() : running ? void stop() : void start());
+$('initializeBtn').addEventListener('click', () => starting ? startupController?.abort() : running ? void stop() : void initializeExperience());
 $('devicesBtn').addEventListener('click', () => void refreshMicrophones());
 $('recalibrateBtn').addEventListener('click', async () => { await stop(); await start(); });
 $('retryBtn').addEventListener('click', () => void dispatcher.retry());
@@ -339,7 +474,7 @@ $('downloadBtn').addEventListener('click', () => {
   anchor.href = url; anchor.download = 'echosphere-payload.json'; anchor.click();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 });
-window.addEventListener('pagehide', () => { stream?.getTracks().forEach(track => track.stop()); void sceneAudio.disable(); navigator.vibrate?.(0); });
+window.addEventListener('pagehide', () => { stream?.getTracks().forEach(track => track.stop()); void stopNarration(); neuralVoice.cancel(); recognizer.cancel(); void sceneAudio.disable(); navigator.vibrate?.(0); });
 
 async function connectEvolus({ selectLive = true } = {}) {
   if (connectionPending) return false;
@@ -384,6 +519,7 @@ async function connectEvolus({ selectLive = true } = {}) {
       if (!resultResponse.ok) throw new Error(result.error || `Backend returned HTTP ${resultResponse.status}`);
       if (result.turn_id !== payload.turn_id || typeof result.reply !== 'string') throw new Error('Unexpected agent response.');
       showReply(result.reply, 'Live Evolus agent');
+      offerAutomaticReply(result.reply, payload.turn_id);
       $('agentStatus').textContent = 'EchoSphere agent connected — response received.';
       window.dispatchEvent(new CustomEvent('echosphere:response', { detail: result }));
     });
@@ -408,7 +544,7 @@ function showReply(reply, sourceLabel = 'Live Evolus agent') {
   $('replySource').textContent = sourceLabel;
   $('agentReply').textContent = reply;
   spokenReply = reply;
-  $('speakBtn').disabled = false;
+  $('speakBtn').disabled = voiceBusy;
   $('heroStory').textContent = 'Your story has a new response. Read it below ↓';
 }
 
@@ -456,42 +592,157 @@ $('agentForm').addEventListener('submit', async event => {
   finally { setupPending = false; $('saveAgentBtn').disabled = false; }
 });
 
-async function speakReply() {
-  if (!spokenReply) return;
-  const synth = window.speechSynthesis;
-  if (!synth) { $('playbackStatus').textContent = 'This browser has no speech playback support.'; return; }
-  const voices = synth.getVoices().filter(voice => voice.localService);
-  const voice = voices.find(v => v.lang.startsWith('en')) || voices[0];
-  if (!voice) {
-    $('playbackStatus').textContent = 'No local voice is available in this browser. The response is shown above.';
-    return;
-  }
-  // Playback is explicit, and capture stops so narration cannot become a user turn.
-  if (running) await stop();
-  synth.cancel();
-  const utterance = new SpeechSynthesisUtterance(spokenReply);
-  utterance.voice = voice;
-  utterance.lang = voice.lang;
-  utterance.onend = () => { $('playbackStatus').textContent = 'Playback finished. Start the microphone when you are ready.'; };
-  utterance.onerror = () => { $('playbackStatus').textContent = 'Playback failed. The response is still available as text.'; };
-  $('playbackStatus').textContent = 'Playing locally. Microphone capture is paused.';
-  synth.speak(utterance);
+function systemVoices() { return window.speechSynthesis?.getVoices().filter(voice => voice.localService) || []; }
+function voiceKey(voice) { return voice.voiceURI || `${voice.name}:${voice.lang}`; }
+function refreshVoices() {
+  const previous = $('voiceSelect').value, neural = $('voiceEngine').value === 'neural';
+  const choices = neural ? neuralChoices : systemVoices().map(voice => [voiceKey(voice), `${voice.name} · ${voice.lang}`]);
+  $('voiceSelect').replaceChildren(...choices.map(([value, label]) => new Option(label, value)));
+  if (choices.some(([key]) => key === previous)) $('voiceSelect').value = previous;
+  if (!choices.length) $('voiceSelect').add(new Option('No installed voices exposed by this browser', ''));
+  $('loadVoiceBtn').hidden = !neural; $('refreshVoicesBtn').hidden = neural;
+  $('spatialControls').disabled = !neural;
+  $('voiceHelp').textContent = neural
+    ? 'Kokoro generates English speech on your device. First use downloads the model and runtime (roughly 100 MB or more) from Hugging Face and jsDelivr. Text stays local. Browser caching may avoid repeat downloads.'
+    : 'Only installed local voices are listed. On Windows, add speech voices in Settings → Time & language → Speech, then restart Edge. Some Narrator voices are not exposed to websites.';
+  $('spatialStatus').textContent = neural
+    ? 'Neural speech uses binaural HRTF positioning, distance filtering, and room reflections. Use headphones; front/back perception varies by listener.'
+    : 'System speech plays flat: browsers do not expose its audio to 3D processing. Choose Kokoro or play a recording for spatial audio.';
 }
+function setVoiceBusy(value) {
+  voiceBusy = value;
+  $('previewVoiceBtn').disabled = value; $('loadVoiceBtn').disabled = value;
+  $('speakBtn').disabled = value || !spokenReply; $('playFileBtn').disabled = value || !recordingFile;
+}
+function configureVoice() {
+  const options = { angle: Number($('voiceAngle').value), distance: Number($('voiceDistance').value), room: Number($('voiceRoom').value), motion: voiceMotion };
+  $('voiceAngleVal').textContent = `${Math.abs(options.angle)}° ${options.angle < 0 ? 'left' : options.angle > 0 ? 'right' : 'ahead'}`;
+  $('voiceDistanceVal').textContent = `${options.distance.toFixed(1)} m`;
+  $('voiceRoomVal').textContent = `${Math.round(options.room * 100)}%`;
+  $('voiceSpeedVal').textContent = `${Number($('voiceSpeed').value).toFixed(2)}×`;
+  spatialVoice.configure(options); spatialVoice.onPosition(voicePosition(options));
+}
+async function stopNarration(keepConversationAudio = false) {
+  speechRun++; window.speechSynthesis?.cancel();
+  if (neuralVoice.pending && !(keepConversationAudio && neuralVoice.pending.type === 'generate')) neuralVoice.cancel();
+  setVoiceBusy(false);
+  if (keepConversationAudio) spatialVoice.interrupt(); else await spatialVoice.close();
+}
+async function playNarration(text, file = null, automatic = false) {
+  if (voiceBusy || (!text && !file)) return;
+  if (starting) { startupController?.abort(); $('playbackStatus').textContent = 'Microphone request cancelled. Press Play again when it has stopped.'; return; }
+  const run = ++speechRun, neural = $('voiceEngine').value === 'neural';
+  let systemQueued = false;
+  setVoiceBusy(true);
+  try {
+    // Resume from this click gesture, before model download or microphone cleanup.
+    const unlock = (neural || file) ? spatialVoice.unlock() : Promise.resolve();
+    // Observe rejection immediately while capture cleanup is in progress.
+    const unlocked = unlock.then(() => null, error => error);
+    if (running && !automatic) await stop({ preservePlayback: true });
+    const error = await unlocked; if (error) throw error;
+    if (run !== speechRun) return;
+    window.speechSynthesis?.cancel();
+    spatialVoice.sceneStarted = null;
+    if (file) {
+      const decoded = await spatialVoice.context.decodeAudioData(await file.arrayBuffer());
+      if (run !== speechRun) return;
+      if (decoded.duration > 180) throw new Error('Choose a recording shorter than three minutes.');
+      const mono = new Float32Array(decoded.length);
+      for (let channel = 0; channel < decoded.numberOfChannels; channel++) {
+        const values = decoded.getChannelData(channel);
+        for (let i = 0; i < mono.length; i++) mono[i] += values[i] / decoded.numberOfChannels;
+      }
+      $('spatialControls').disabled = false;
+      $('spatialStatus').textContent = 'Your recording is playing through HRTF positioning and room effects. Adjust direction or distance while it plays.';
+      $('playbackStatus').textContent = 'Playing your recording in 3D. Microphone paused.';
+      await spatialVoice.play(mono, decoded.sampleRate);
+    } else if (neural) {
+      $('playbackStatus').textContent = 'Preparing local neural narration. Microphone paused.';
+      await neuralVoice.load();
+      const segments = speechSegments(text), voice = $('voiceSelect').value;
+      await neuralVoice.idle;
+      const generate = segment => neuralVoice.generate(segment, voice, Number($('voiceSpeed').value) * (automatic ? deliveryProfile.soft ? 0.9 : 0.95 + deliveryProfile.intensity * 0.1 : 1))
+        .then(audio => ({ audio }), error => ({ error }));
+      let pending = segments.length ? generate(segments[0]) : null;
+      for (let i = 0; i < segments.length; i++) {
+        if (run !== speechRun) return;
+        $('voiceStatus').textContent = `Generating locally: passage ${i + 1} of ${segments.length}…`;
+        const result = await pending; if (result.error) throw result.error;
+        const { audio } = result;
+        if (run !== speechRun) return;
+        if (i + 1 < segments.length) pending = generate(segments[i + 1]);
+        $('playbackStatus').textContent = `Playing neural narration in 3D · passage ${i + 1}/${segments.length}.${automatic ? ' Speak to interrupt.' : ''}`;
+        await spatialVoice.play(audio.pcm, audio.sampleRate, i + 1 === segments.length);
+      }
+      $('voiceStatus').textContent = 'Neural voice ready. Change voices to compare another delivery.';
+    } else {
+      const voices = systemVoices();
+      const voice = voices.find(item => voiceKey(item) === $('voiceSelect').value) || voices.find(item => item.lang.startsWith('en')) || voices[0];
+      if (!voice) throw new Error('No installed voice is available. Refresh voices, install a speech voice, or load Kokoro.');
+      const utterance = new SpeechSynthesisUtterance(text); utterance.voice = voice; utterance.lang = voice.lang;
+      utterance.rate = Number($('voiceSpeed').value);
+      utterance.onend = () => { if (run === speechRun) { setVoiceBusy(false); $('playbackStatus').textContent = 'Playback finished. Start the microphone when you are ready.'; } };
+      utterance.onerror = () => { if (run === speechRun) { setVoiceBusy(false); $('playbackStatus').textContent = 'System voice playback failed. The response remains available as text.'; } };
+      $('playbackStatus').textContent = `Playing ${voice.name} locally · flat system audio. Microphone paused.`;
+      window.speechSynthesis.speak(utterance);
+      systemQueued = true;
+      return;
+    }
+    if (run === speechRun) $('playbackStatus').textContent = 'Playback finished. Start the microphone when you are ready.';
+  } catch (error) { if (run === speechRun) $('playbackStatus').textContent = error.message; }
+  finally {
+    if (run === speechRun && !systemQueued) { setVoiceBusy(false); if (!conversationActive) await spatialVoice.close(); }
+  }
+}
+function speakReply() { return playNarration(spokenReply); }
+$('voiceEngine').addEventListener('change', () => { void stopNarration(); refreshVoices(); $('voiceStatus').textContent = 'Voice engine changed. Audition a voice before playing the response.'; });
+$('refreshVoicesBtn').addEventListener('click', refreshVoices);
+window.speechSynthesis?.addEventListener('voiceschanged', () => { if ($('voiceEngine').value === 'system') refreshVoices(); });
+$('previewVoiceBtn').addEventListener('click', () => void playNarration('The observatory lights fade. I am beside you. Listen carefully. Someone is moving beyond the door.'));
+$('stopVoiceBtn').addEventListener('click', () => { pendingVoice = null; interactionVersion++; void stopNarration(conversationActive); $('playbackStatus').textContent = `Voice stopped. ${running ? 'Microphone is still listening.' : 'Microphone remains off.'}`; });
+$('loadVoiceBtn').addEventListener('click', async () => {
+  if (voiceBusy) return;
+  const run = ++speechRun; setVoiceBusy(true);
+  $('voiceStatus').textContent = 'Downloading and loading neural voices. Stop voice cancels this operation.';
+  try { await neuralVoice.load(); if (run === speechRun) $('voiceStatus').textContent = 'Neural voices loaded. Audition a voice with headphones.'; }
+  catch (error) { if (run === speechRun) $('voiceStatus').textContent = error.message; }
+  finally { if (run === speechRun) setVoiceBusy(false); }
+});
+$('voicePreset').addEventListener('change', () => {
+  const preset = VOICE_PRESETS[$('voicePreset').value]; voiceMotion = preset.motion;
+  for (const [id, key] of [['voiceAngle', 'angle'], ['voiceDistance', 'distance'], ['voiceRoom', 'room'], ['voiceSpeed', 'speed']]) $(id).value = preset[key];
+  configureVoice();
+});
+for (const id of ['voiceAngle', 'voiceDistance', 'voiceRoom', 'voiceSpeed']) $(id).addEventListener('input', () => {
+  if (id === 'voiceAngle') voiceMotion = 'still'; configureVoice();
+});
+$('voiceFile').addEventListener('change', event => {
+  const file = event.target.files[0]; recordingFile = file && file.size <= 20 * 1024 * 1024 ? file : null;
+  $('playFileBtn').disabled = voiceBusy || !recordingFile;
+  if (file && !recordingFile) $('playbackStatus').textContent = 'Choose an audio recording no larger than 20 MB.';
+});
+$('playFileBtn').addEventListener('click', () => void playNarration('', recordingFile));
+refreshVoices(); configureVoice();
+$('prepareConversationBtn').addEventListener('click', () => { if (running) void stop().then(initializeExperience); else void initializeExperience(); });
+$('conversationToggle').addEventListener('change', () => {
+  if (!$('conversationToggle').checked) { conversationActive = false; conversationRequested = false; pendingVoice = null; void stopNarration(); }
+});
 
 // Register an async handler that resolves only after your server accepts a turn.
 // Keep adapters local. Do not enable browser SpeechRecognition implicitly:
 // it can send microphone audio to a remote speech service.
 window.echoSphere = Object.freeze({
-  start, stop, connectEvolus,
+  start, stop, connectEvolus, initializeExperience,
   setTurnHandler: handler => dispatcher.setHandler(handler),
   connectLocalEndpoint: options => dispatcher.setHandler(createLocalJsonHandler(options)),
   retryDelivery: () => dispatcher.retry(),
   addTranscript: result => engine?.setTranscript(result) || false,
-  getStatus: () => ({ visual: visuals.getState(), narrativeMode, tourActive, running, starting, captureMode, frameCount, diagnostic: structuredClone(diagnostic), agentReady, turnId: engine?.turn?.id || null, queuedTurns, transportState }),
+  getStatus: () => ({ visual: visuals.getState(), conversation: { active: conversationActive, preparing: preparingConversation, recognitionReady: recognizer.ready, recognitionPending, interactionVersion, interruptions }, voice: { busy: voiceBusy, neuralReady: neuralVoice.ready, engine: $('voiceEngine').value, spatial: spatialVoice.options, delivery: deliveryProfile }, narrativeMode, tourActive, running, starting, captureMode, frameCount, diagnostic: structuredClone(diagnostic), agentReady, turnId: engine?.turn?.id || null, queuedTurns, transportState }),
 });
 $('startBtn').disabled = false;
 $('initializeBtn').disabled = false;
-$('heroStatus').textContent = 'Microphone stays off until you choose to begin.';
+$('heroStatus').textContent = 'Headphones recommended. First conversation downloads speech models in your browser.';
 $('micStatus').textContent = 'Microphone off';
 $('notice').textContent = 'Start in a quiet room and remain silent for 1.2 seconds to calibrate the noise floor.';
 void connectEvolus({ selectLive: false });
@@ -513,6 +764,7 @@ $('textForm').addEventListener('submit', event => {
   $('storyText').value = '';
 });
 $('ambienceToggle').addEventListener('change', async event => {
+  event.target.dataset.userChoice = 'true';
   event.target.disabled = true;
   try { if (event.target.checked) await sceneAudio.enable(); else await sceneAudio.disable(); }
   catch { event.target.checked = false; $('sceneStatus').textContent = 'Ambient sound could not start. The text and microphone controls remain available.'; }

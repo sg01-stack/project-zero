@@ -4,7 +4,7 @@ Updated 2026-10-17. Repository: `sg01-stack/project-zero`, branch `main`. Use th
 
 ## User's goal
 
-A submission-worthy hackathon project judges can open from an HTTPS link without installing dependencies, Evolus Studio, or entering their own key. The user explicitly authorized fixing the app, updating GitHub, and pushing `main`. They asked us to choose hosting; **Render** was selected. Their latest design request was a new look: a twinkling starfield, draggable four-shell atom with orbiting electrons reacting to real-time speech, a centered two-inch waveform above “Click to Initialize.”, and “Welcome To Echosphere.” below the atom. Do not ask them to choose the technology again.
+A submission-worthy hackathon project judges can open from an HTTPS link without installing dependencies, Evolus Studio, or entering their own key. The user explicitly authorized fixing the app, updating GitHub, and pushing `main`. They asked us to choose hosting; **Render** was selected. Their design request was a new look: a twinkling starfield, draggable eight-orbit atom with orbiting electrons reacting to real-time speech, a centered two-inch waveform above “Click to Initialize.”, and “Welcome To Echosphere.” below the atom. They subsequently requested eight orbits, a bold welcome title, a larger waveform, and a real automatic conversation experience. They explicitly chose free local neural voices with browser model downloads. They do not want judges to install Studio, Node, or speech software. Do not ask them to choose the technology again.
 
 ## Current state
 
@@ -12,14 +12,19 @@ The repository contains the full app, not just an HTML mockup. The prior Windows
 
 The new submission build adds:
 
-- The requested cosmic welcome screen: perspective-projected, depth-sorted four-shell atom with 60 electrons, pointer and keyboard rotation, 50 ms acoustic-driven animation, responsive layout, and reduced-motion support.
+- The requested cosmic welcome screen: perspective-projected, depth-sorted eight-orbit atom with 122 electrons, pointer and keyboard rotation, 50 ms acoustic-driven animation, responsive layout, and reduced-motion support.
 - Hosted mode behind HTTPS with Render/Docker configuration, host/origin checks, secure visitor cookies, isolated conversations and retry caches, and per-process/per-visitor completion budgets.
 - Hosted credentials are supplied by the owner. Visitors cannot change them and never receive the key. Public setup form is hidden/disabled.
 - A visible Live/Offline mode, an explicitly scripted offline scene, typed actions with no invented audio features, and three labelled synthetic feature tours that never call the LLM.
-- Continuous stereo ambience driven by acoustic frames, optional browser vibration preview, and local voice playback.
+- Browser Whisper tiny.en recognition, Kokoro voices, automatic spoken replies, sustained-speech interruption, HRTF/distance/reverb processing, and vocal-delivery modulation. See docs/VOICES.md for verification limits.
+- Continuous stereo ambience driven by acoustic frames, optional browser vibration preview, ten auditionable Kokoro voices, and flat system-voice fallback.
 - `docs/DEPLOYMENT.md`, `docs/SUBMISSION.md`, `render.yaml`, `Dockerfile`, and a GitHub Actions test/build workflow.
 
-## Outstanding step — public hosting
+## Outstanding steps — models and public hosting
+
+The real model imports and download-failure recovery are tested, but successful Whisper/Kokoro inference is NOT verified. Hugging Face returns proxy HTTP 403 in this cloud environment. A network draft adds huggingface.co, *.huggingface.co and *.hf.co while preserving api.evolus.ai and app.evolus.ai. User application/publication is still required; saving the draft did not update the running proxy. After access is applied, run npm run test:models (real Kokoro → Whisper, no Evolus credits), then test a real conversation. Do not treat mocks as real speech recognition or voice-quality evidence.
+
+## Public hosting
 
 **No public URL has been deployed or verified.** Deployment files and local hosted-mode tests are not a deployment. This environment has an Evolus key but no Render/Railway/Fly hosting credential or connected deployment tool. Do not claim judges already have a live site.
 
@@ -44,7 +49,7 @@ No Evolus Studio installation is needed. Confirmed API:
 
 The backend resolves the route automatically. Reuse injected `EVOLUS_API_KEY` where present; inspect presence only, never its value. The cloud secret does not travel with a downloaded ZIP. Local users can enter a key in the app; remembered settings are excluded from Git. Do not ask for keys in chat.
 
-Real Evolus completions have been verified with AudioWorklet capture, forced compatibility capture, first-run key setup, and a typed turn through hosted visitor/session handling. Acoustic-only replies sometimes use Italian because of the saved agent configuration; a typed English request returned English. For a consistently English presentation, the owner should set the language in the Evolus agent's saved instructions.
+Real Evolus completions have been verified with AudioWorklet capture, forced compatibility capture, first-run key setup, and a typed turn through hosted visitor/session handling. The agent returned Italian even with English system guidance. A live test using a direct English instruction preceding the intact JSON report returned English. The adapter now applies that request format; verify language again if the saved agent changes.
 
 ## Run and verify
 
@@ -60,13 +65,16 @@ npm run test:submission
 
 `npm start` or `Start EchoSphere.cmd` also opens the local browser. Do not create Codex localhost preview links; this onboarding UI does not expose them to the user's laptop microphone.
 
-- `npm test`: 42 tests at this handoff, covering acoustic/capture regression, local setup, persistent settings, launcher startup, hosted visitor isolation, budgets, and demo behavior.
+- `npm test`: 47 tests at this handoff, covering acoustic/capture regression, local setup, persistent settings, launcher startup, hosted visitor isolation, budgets, and demo behavior.
 - `test:browser`: microphone→JSON flow with synthetic microphone input; permission/cancellation/AbortError fallback; local key setup and mock agent delivery. It explicitly skips direct-file navigation if cloud browser policy blocks `file://`.
 - `test:submission`: pointer/keyboard rotation, mobile first screen, voice-reactive energy, reduced-motion behavior, no-key/no-microphone offline judge flow, and a simulated HTTPS proxy with secure cookies, hosted text delivery, and hidden credential form. Provider replies are mocked in this suite.
+- `test:voice`: measures actual HRTF left/right output, distance attenuation and reverb tail; real worker imports/failure recovery; mocked inference playback and cancellation.
+- `test:conversation`: complete fake-microphone recognition/narration flow, automatic spatial playback, interruption and warmup cancellation. ASR/TTS/Evolus are mocked.
+- `test:models`: optional real public model downloads and Kokoro → Whisper round trip; currently blocked by network policy.
 - `test:live`: optional; makes one paid real completion with the configured key. `ECHOSPHERE_CAPTURE_MODE=compatibility npm run test:live` tests the fallback. Do not repeatedly spend API calls for unrelated cosmetic edits.
 - Build output in `dist/` is committed. Rebuild after editing browser source. The CI checks generated output matches source.
 - Docker build and non-root runtime verification passed: health endpoint, hosted secure session, page/bundle delivery, and no local credential files in the image. An image may need rebuilding in a new environment.
 
 ## Scope boundaries
 
-This is a functional hackathon prototype, not every feature in the original vision. No local ASR model, trained emotion classifier, multi-character binaural speech engine, or directional haptic hardware is included. Whisper-like is tentative; synthetic tests are not measured real-world accuracy. Stereo panning and browser vibration must not be described as full binaural 3D audio or directional tactile output. Raw microphone audio stays local; live narration uses remote Evolus. Windows hardware and physical speaker/vibration output were not tested in the Linux cloud environment.
+This is a functional hackathon prototype with a newly integrated speech-model path, not a fully verified public product. No trained emotion classifier, multi-character director, or directional haptic hardware is included. Whisper recognition can hallucinate on noise; whisper-like acoustic labels remain tentative. Narration uses HRTF, while the background ambience uses stereo panning. Raw microphone audio stays local; live narration uses remote Evolus. Windows hardware, physical headphone localization, real speech-model accuracy/quality and the deployed HTTPS experience remain unverified. Do not guarantee flawless operation or infer emotion as fact.

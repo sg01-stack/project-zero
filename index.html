@@ -15,7 +15,7 @@
     </header>
     <div class="hero-stage">
       <div class="atom-stage">
-        <canvas id="atomCanvas" tabindex="0" role="img" aria-label="Interactive three-dimensional atom with four shells and sixty electrons. Drag to rotate, or use the arrow keys. Home resets the view."></canvas>
+        <canvas id="atomCanvas" tabindex="0" role="img" aria-label="Interactive three-dimensional atom with eight orbits and 122 electrons. Drag to rotate, or use the arrow keys. Home resets the view."></canvas>
         <p class="orbit-hint">DRAG TO EXPLORE <span aria-hidden="true">·</span> ARROW KEYS TO ROTATE</p>
       </div>
       <h1 id="welcomeTitle">Welcome To Echosphere.</h1>
@@ -36,6 +36,15 @@
     <p>Audio analysis runs on your device. Live narration uses Evolus; the offline scene works without an account.</p>
     <div class="mode-bar"><span id="modeBadge" role="status">Checking live narration…</span><button id="offlineBtn" class="secondary">Try offline scene</button></div>
     <p id="modeHelp">Choose live narration or explore the clearly labelled scripted demo. Use headphones for the soundscape.</p>
+    <section class="agent-panel" aria-labelledby="conversationTitle">
+      <h2 id="conversationTitle">Talk to the observatory</h2>
+      <label><input id="conversationToggle" type="checkbox" checked> Conversation: understand my words, respond aloud, and listen for interruptions</label>
+      <p>Speech recognition and neural voices run in this browser. The first use downloads roughly 200 MB or more; there is no Studio or speech software to install. Use headphones to keep the narrator out of your microphone.</p>
+      <button id="prepareConversationBtn" class="secondary">Start conversation</button>
+      <p id="conversationStatus" role="status">Initialize to prepare the speech models. Typed actions remain available during download.</p>
+      <h2>Your words</h2><p id="transcriptText" role="status">Your recognized speech will appear here.</p>
+      <p>Orbits and ambience respond every 50 ms. Narration follows natural pauses; speaking interrupts it. Speech style affects voice distance and pacing, without claiming to identify your emotions.</p>
+    </section>
     <section id="launchHelp" class="agent-panel" hidden>
       <h2>Open the full app</h2>
       <p>On Windows, close this tab and double-click <strong>Start EchoSphere.cmd</strong> in the extracted folder. It starts EchoSphere and opens the correct browser page. Keep its terminal window open.</p>
@@ -60,13 +69,40 @@
         </form>
       </details>
       <p id="agentTestStatus" role="status"></p>
-      <p>Vocal delivery is sent as JSON after each turn. Words require a separate local speech recognizer; without one, the agent receives acoustic context only.</p>
+      <p>Conversation mode recognizes your words locally and sends text plus acoustic context to the narrator. Raw microphone audio stays in this browser. The microphone-only controls below can also inspect delivery without loading speech models.</p>
     </section>
     <h2>Narrative response</h2>
     <p id="replySource" class="eyebrow">Awaiting a story</p>
     <p id="agentReply" role="status">Begin at the doors of an abandoned observatory. Connect live narration or choose the offline scene, then speak or type your next action.</p>
     <button id="speakBtn" class="secondary" disabled>Play response · pauses microphone</button>
+    <button id="stopVoiceBtn" class="secondary">Stop voice</button>
     <p id="playbackStatus" role="status"></p>
+    <section class="agent-panel voice-studio" aria-labelledby="voiceTitle">
+      <h2 id="voiceTitle">Voice &amp; space</h2>
+      <p>Audition a voice, then place it in the scene. Wear stereo headphones for the spatial effect.</p>
+      <div class="voice-grid">
+        <div><label for="voiceEngine">Voice engine</label><select id="voiceEngine"><option value="neural">Kokoro · local neural voice + 3D</option><option value="system">Installed system voice · flat playback</option></select></div>
+        <div><label for="voiceSelect">Voice</label><select id="voiceSelect"></select></div>
+      </div>
+      <p id="voiceHelp">Kokoro generates English speech on your device. The first use downloads the open-weight model and runtime (roughly 100 MB or more) from Hugging Face and jsDelivr. Text is processed locally. Browser caching may avoid repeat downloads.</p>
+      <div class="actions"><button id="loadVoiceBtn" class="secondary">Load neural voices</button><button id="previewVoiceBtn" class="secondary">Audition selected voice</button><button id="refreshVoicesBtn" class="secondary" hidden>Refresh installed voices</button></div>
+      <p id="voiceStatus" role="status">Choose Heart or Bella for a first audition; compare Emma and George for British English.</p>
+      <div class="voice-grid">
+        <div><label for="voicePreset">Scene placement</label><select id="voicePreset"><option value="guide">Guide beside you</option><option value="intimate">Close, gentle delivery</option><option value="hall">Across the observatory</option><option value="passing">Passing from left to right</option><option value="orbit">Moving around you</option></select></div>
+        <div><label for="voiceSpeed">Speaking speed <output id="voiceSpeedVal">0.95×</output></label><input id="voiceSpeed" type="range" min="0.75" max="1.25" step="0.05" value="0.95"></div>
+      </div>
+      <fieldset id="spatialControls"><legend>3D position &amp; room</legend>
+        <div class="voice-grid">
+          <div><label for="voiceAngle">Direction <output id="voiceAngleVal">30° left</output></label><input id="voiceAngle" type="range" min="-180" max="180" step="5" value="-30"></div>
+          <div><label for="voiceDistance">Distance <output id="voiceDistanceVal">1.2 m</output></label><input id="voiceDistance" type="range" min="0.5" max="12" step="0.1" value="1.2"></div>
+          <div><label for="voiceRoom">Room reflections <output id="voiceRoomVal">16%</output></label><input id="voiceRoom" type="range" min="0" max="0.65" step="0.01" value="0.16"></div>
+          <div class="voice-position" aria-hidden="true"><span>L</span><div class="position-field"><i id="voiceDot"></i><b>You</b></div><span>R</span></div>
+        </div>
+      </fieldset>
+      <p id="spatialStatus" role="status">Neural speech uses binaural HRTF positioning, distance filtering, and room reflections. Front/back perception varies by listener and headphones.</p>
+      <details><summary>Try a voice recording in 3D</summary><p>Load a WAV or other browser-supported audio file to hear these effects immediately. The file stays on your device. This plays your recording; it does not clone its voice.</p><label for="voiceFile">Audio file (up to 20 MB, three minutes)</label><input id="voiceFile" type="file" accept="audio/*"><button id="playFileBtn" class="secondary" disabled>Play recording in 3D</button></details>
+      <p>Placement and pacing create atmosphere; these presets do not infer your emotions or turn every voice into an actor. System voices cannot receive these 3D effects.</p>
+    </section>
     <div class="dashboard">
       <div class="metric"><label>TURN STATE</label><div id="turnStateVal" class="value" role="status">Stopped</div></div>
       <div class="metric"><label>ACOUSTIC STYLE</label><div id="moodVal" class="value">—</div></div>
@@ -104,7 +140,7 @@
         <textarea id="storyText" rows="2" maxlength="2000" placeholder="For example: I take the left passage and listen." required></textarea>
         <button type="submit" class="secondary">Send story text</button>
       </form>
-      <p>Text is an accessible alternative to speaking. Microphone capture measures delivery; it does not transcribe words.</p>
+      <p>Text is an accessible alternative to speaking. Conversation mode includes local English speech recognition; the microphone-only detector does not transcribe.</p>
     </section>
     <section class="agent-panel" aria-label="Signal tour">
       <h2>Try the signal tour</h2>
@@ -115,7 +151,7 @@
     <details>
       <summary>How to interpret the detector</summary>
       <p>A short, isolated attack followed by a rapid decay is a transient candidate. Whisper-like sound must persist and vary over time. Brief consonants and pauses do not immediately change a speech turn's style.</p>
-      <p>Whisper, breath, wind, and background noise can overlap acoustically. Whisper-like is tentative; uncertain audio is reported separately. For dependable word detection, connect a local speech model and pass its transcript with the current turn ID.</p>
+      <p>Whisper, breath, wind, and background noise can overlap acoustically. Whisper-like is tentative; uncertain audio is reported separately. Conversation mode uses the included browser speech recognizer, which can also make transcription mistakes.</p>
       <p>Analysis uses 50 ms audio frames. Turns finish after 800 ms of silence, or split at 30 seconds. Headphones help prevent narrative playback from entering the microphone.</p>
       <p>Audio analysis stays on this device. When Evolus is configured on the local backend, completed turn JSON is sent to its remote agent; microphone PCM is not sent. No browser speech recognition is enabled. See the README for configuration and integration.</p>
     </details>

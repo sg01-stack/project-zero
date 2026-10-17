@@ -8,7 +8,11 @@ Use **Render** for one HTTPS link that serves both the page and the backend. Jud
 2. Sign in to Render with GitHub and authorize access to this repository if prompted. Render reads `render.yaml` and creates a web service.
 3. Enter your replacement `EVOLUS_API_KEY` in Render's secret environment-variable field. It must have access to the configured EchoSphere agent. Keep the preset agent ID. Do not paste the key into GitHub, the submission text, or chat.
 4. Create/deploy the service. After its status becomes **Live**, open its `https://…onrender.com` address.
-5. Click **Test agent connection**, confirm a real reply, then allow microphone access and try a spoken turn. Submit this HTTPS address alongside the GitHub repository.
+5. Click **Test agent connection** and confirm a real reply. Then click **Click to Initialize.**, allow microphone access, and wait for the browser speech-model downloads. After Ready and calibration, verify recognized words, a spoken reply, and interruption. Submit this HTTPS address alongside the GitHub repository.
+
+The judge uses the deployed page, not a downloaded `index.html` or the GitHub source viewer. The owner configures the Evolus key once in Render; judges never need it. Evolus Studio is not involved in this web API connection.
+
+The page downloads Whisper/Kokoro weights and runtime assets directly to the visitor's browser on request. No model server or Python installation is needed. Visitors need access to `huggingface.co`, its `*.hf.co` download hosts, and `cdn.jsdelivr.net`. Initial downloads can exceed 200 MB. Warm the models before a timed presentation, and verify on the target browser; no instant first-load or arbitrary-device latency guarantee is made.
 
 The free plan is selected to avoid an unexpected charge. Free instances can sleep when idle and need time to wake. If an instant, always-on judging link is required, select an appropriate paid instance in Render after reviewing its price. Neither hosting nor the Evolus service can be guaranteed flawless or uninterrupted. The offline scene remains usable when live narration is unavailable, once the page has loaded.
 

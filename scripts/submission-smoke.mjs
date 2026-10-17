@@ -29,7 +29,7 @@ try {
   assert.equal(await page.locator('#initializeLabel').textContent(), 'Click to Initialize.');
   assert.equal(await page.locator('#welcomeTitle').textContent(), 'Welcome To Echosphere.');
   const visual = await page.evaluate(() => window.echoSphere.getStatus().visual);
-  assert.equal(visual.shells, 4); assert.equal(visual.electrons, 60); assert.equal(visual.active, false);
+  assert.equal(visual.shells, 8); assert.equal(visual.electrons, 122); assert.equal(visual.active, false);
   assert.equal(Math.round((await page.locator('#voiceWave').boundingBox()).width), 192);
   await page.screenshot({ path: '/tmp/echosphere-cosmic-desktop.png' });
   const atom = await page.locator('#atomCanvas').boundingBox();
@@ -46,7 +46,7 @@ try {
   const initializeBox = await page.locator('#initializeBtn').boundingBox();
   assert.ok(initializeBox.y + initializeBox.height < 844, 'Initialize is visible on the first mobile screen');
   await page.setViewportSize({ width: 1440, height: 1000 });
-  console.log('PASS cosmic interface: four shells, sixty electrons, 2-inch waveform, pointer and keyboard rotation, mobile first screen');
+  console.log('PASS cosmic interface: eight orbits, 122 electrons, 2-inch waveform, pointer and keyboard rotation, mobile first screen');
   await page.getByRole('button', { name: 'Try offline scene', exact: true }).click();
   await page.locator('#storyText').fill('I take the left passage');
   await page.getByRole('button', { name: 'Send story text', exact: true }).click();
