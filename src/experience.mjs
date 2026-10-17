@@ -3,7 +3,11 @@ export class OfflineStory {
   constructor() { this.turns = 0; }
   reply(payload) {
     this.turns++;
+    if (payload.event === 'story_start') return 'Your guide whispers beside you at the doors of the abandoned observatory. Two passages glow ahead; tell me what catches your attention.';
+    if (payload.event === 'story_continue') return 'A distant chime echoes across the observatory. Your guide waits nearby; you can follow the sound, look around, or ask her about it.';
     const words = payload.transcript?.text?.toLowerCase() || '';
+    if (words.includes('whisper') && words.includes('beside')) return 'Your guide whispers beside you, keeping her voice low as you listen at the door. A faint rustle slips through the seam; she waits for your next move.';
+    if (words.includes('distant') && words.includes('hall')) return 'A distant voice answers from the right, echoing across the great hall. “The telescope is still awake,” it calls, leaving you to decide whether to follow.';
     if (words.includes('left')) return 'You take the left corridor. A low mechanical hum grows clearer, and a blue lamp reveals a door marked OBSERVATORY. You can open the door or listen at the wall.';
     if (words.includes('right')) return 'The right corridor leads to a rain-dark courtyard. A bell moves without ringing. Beneath it, a narrow stair descends into warm light.';
     if (words.includes('open') || words.includes('door')) return 'The observatory door opens. A guide waits beside a map of moving stars. “We have been listening,” she says. “Which path will you choose?”';

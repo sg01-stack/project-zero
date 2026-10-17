@@ -1,10 +1,10 @@
-// Dependency-free 3D projection: eight orbit planes, depth-sorted electrons and
+// Dependency-free 3D projection: sixteen orbit planes, depth-sorted electrons and
 // a draggable global rotation. Acoustic frames modulate the animation locally.
 export class AtomExperience {
   constructor({ stars, atom, waveform }) {
     this.stars = stars; this.atom = atom; this.waveform = waveform;
     this.rotation = { x: -0.35, y: 0.3 };
-    this.energy = 0; this.target = 0; this.active = false; this.phase = 0;
+    this.energy = 0; this.waveEnergy = 0; this.wavePhase = 0; this.target = 0; this.active = false; this.phase = 0;
     this.reducedMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
     this.drag = null;
     this.starPoints = Array.from({ length: 260 }, () => ({ x: Math.random(), y: Math.random(), size: 0.3 + Math.random() * 1.3,
@@ -18,6 +18,14 @@ export class AtomExperience {
       { radius: 108, tilt: 0.65, turn: -1.8, count: 12, color: '#a2f4df' },
       { radius: 138, tilt: 2.2, turn: 0.8, count: 20, color: '#d5b6ff' },
       { radius: 164, tilt: 1.3, turn: 1.7, count: 24, color: '#8bbdff' },
+      { radius: 71, tilt: 2.5, turn: -0.7, count: 4, color: '#d7ceff' },
+      { radius: 87, tilt: 0.25, turn: 2.2, count: 6, color: '#a4e9ff' },
+      { radius: 101, tilt: 1.8, turn: -2.2, count: 10, color: '#c0b0ff' },
+      { radius: 117, tilt: 2.7, turn: 0.45, count: 12, color: '#ffd0ec' },
+      { radius: 130, tilt: 0.95, turn: 2.6, count: 14, color: '#91deed' },
+      { radius: 146, tilt: 2.35, turn: -1.5, count: 16, color: '#b5caff' },
+      { radius: 159, tilt: 0.2, turn: -0.25, count: 18, color: '#d2b2f5' },
+      { radius: 171, tilt: 1.7, turn: 2.9, count: 20, color: '#b5f0e8' },
     ];
     atom.addEventListener('pointerdown', event => {
       if (event.button !== 0) return;
@@ -44,7 +52,11 @@ export class AtomExperience {
     const animate = now => {
       const elapsed = Math.min((now - this.last) / 1000, 0.06); this.last = now;
       if (!document.hidden) {
-        this.energy += (this.target - this.energy) * 0.12;
+        this.energy += (this.target - this.energy) * (1 - Math.exp(-elapsed / 0.25));
+        // A separate envelope keeps the waveform unhurried even during loud
+        // attacks. Integrate phase: loudness must never jump the time offset.
+        this.waveEnergy += (this.target - this.waveEnergy) * (1 - Math.exp(-elapsed / (this.target > this.waveEnergy ? 0.65 : 1.15)));
+        if (!this.reducedMotion) this.wavePhase += elapsed * 0.85;
         if (!this.reducedMotion) this.phase += elapsed * (0.32 + this.energy * 1.5);
         this.drawStars(now / 1000); this.drawAtom(); this.drawWave(now / 1000);
       }
@@ -54,10 +66,10 @@ export class AtomExperience {
   }
   react(frame) {
     this.target = ['silence', 'pause', 'calibrating', 'calibration_needed'].includes(frame.state) ? 0
-      : Math.max(0, Math.min(1, (frame.level_dbfs + 65) / 45));
+      : Math.max(0, Math.min(1, (frame.level_dbfs - (frame.noise_floor_dbfs ?? -65) - 6) / 44));
   }
   setActive(value) { this.active = value; if (!value) this.target = 0; }
-  getState() { return { shells: this.shells.length, electrons: this.shells.reduce((sum, shell) => sum + shell.count, 0), rotation: { ...this.rotation }, energy: this.energy, active: this.active }; }
+  getState() { return { shells: this.shells.length, electrons: this.shells.reduce((sum, shell) => sum + shell.count, 0), rotation: { ...this.rotation }, energy: this.energy, waveEnergy: this.waveEnergy, wavePhase: this.wavePhase, active: this.active }; }
   surface(canvas) {
     const { width, height } = canvas.getBoundingClientRect();
     const ratio = Math.min(devicePixelRatio || 1, 2);
@@ -101,7 +113,7 @@ export class AtomExperience {
         items.push({ type: 'line', a, b, z: (a.z + b.z) / 2, color: shell.color });
       }
       for (let electron = 0; electron < shell.count; electron++) {
-        const angle = electron / shell.count * Math.PI * 2 + this.phase * (index % 2 ? -1 : 1) * (1.4 - index * 0.1);
+        const angle = electron / shell.count * Math.PI * 2 + this.phase * (index % 2 ? -1 : 1) * (1.4 - index * 0.045);
         const point = project(this.orbit(shell, angle));
         items.push({ type: 'electron', ...point, color: shell.color, radius: 2.1 + (3 - index % 4) * 0.25 });
       }
@@ -137,9 +149,9 @@ export class AtomExperience {
     ctx.beginPath();
     for (let x = 0; x <= width; x += 2) {
       const envelope = Math.sin(x / width * Math.PI) ** 1.8;
-      const movement = this.reducedMotion ? 0 : time * (2 + this.energy * 3);
-      const wave = Math.sin(x * 0.095 - movement) * Math.sin(x * 0.032 + movement * 0.4);
-      const amplitude = Math.min(height / 2 - 5, 16 + this.energy * 24);
+      const movement = this.wavePhase;
+      const wave = Math.sin(x * 0.075 - movement) * Math.sin(x * 0.022 + movement * 0.35);
+      const amplitude = Math.min(height / 2 - 5, 16 + this.waveEnergy * 15);
       const y = height / 2 + wave * envelope * amplitude;
       if (x === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
     }

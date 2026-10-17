@@ -12,7 +12,8 @@
     "test:voice": "node scripts/voice-smoke.mjs",
     "test:conversation": "node scripts/conversation-smoke.mjs",
     "test:models": "node scripts/model-smoke.mjs",
-    "test:live": "node scripts/live-smoke.mjs"
+    "test:live": "node scripts/live-smoke.mjs",
+    "test:judge-live": "node scripts/judge-live-smoke.mjs"
   },
   "engines": { "node": ">=22" }
 }

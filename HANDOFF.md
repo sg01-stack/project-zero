@@ -1,10 +1,10 @@
 # EchoSphere — project handoff
 
-Updated 2026-10-17. Repository: `sg01-stack/project-zero`, branch `main`. Use the existing checkout at `/workspace/project-zero` in Codex. Do not create a worktree unless requested. Start with `git status` and `git log -3 --oneline`; preserve any new user work.
+Updated 2026-10-18 (client date). Repository: `sg01-stack/project-zero`, branch `main`. Use the existing checkout at `/workspace/project-zero` in Codex. Do not create a worktree unless requested. Start with `git status` and `git log -3 --oneline`; preserve any new user work.
 
 ## User's goal
 
-A submission-worthy hackathon project judges can open from an HTTPS link without installing dependencies, Evolus Studio, or entering their own key. The user explicitly authorized fixing the app, updating GitHub, and pushing `main`. They asked us to choose hosting; **Render** was selected. Their design request was a new look: a twinkling starfield, draggable eight-orbit atom with orbiting electrons reacting to real-time speech, a centered two-inch waveform above “Click to Initialize.”, and “Welcome To Echosphere.” below the atom. They subsequently requested eight orbits, a bold welcome title, a larger waveform, and a real automatic conversation experience. They explicitly chose free local neural voices with browser model downloads. They do not want judges to install Studio, Node, or speech software. Do not ask them to choose the technology again.
+A submission-worthy hackathon project judges can open from an HTTPS link without installing dependencies, Evolus Studio, or entering their own key. The user explicitly authorized fixing the app, updating GitHub, and pushing `main`. They asked us to choose hosting; **Render** was selected. Their design request was a new look: a twinkling starfield, draggable sixteen-orbit atom with orbiting electrons reacting to real-time speech, a centered two-inch waveform above “Click to Initialize.”, and “Welcome To Echosphere.” below the atom. The current request is sixteen orbits, a bold welcome title, a slow elegant waveform, stronger whisper transcription, a guide-led story, fast interruptions, and scene placement that follows narrative context. They explicitly chose free local neural voices with browser model downloads. They do not want judges to install Studio, Node, or speech software. Do not ask them to choose the technology again.
 
 ## Current state
 
@@ -12,17 +12,29 @@ The repository contains the full app, not just an HTML mockup. The prior Windows
 
 The new submission build adds:
 
-- The requested cosmic welcome screen: perspective-projected, depth-sorted eight-orbit atom with 122 electrons, pointer and keyboard rotation, 50 ms acoustic-driven animation, responsive layout, and reduced-motion support.
+- The requested cosmic welcome screen: perspective-projected, depth-sorted sixteen-orbit atom with 222 electrons, pointer and keyboard rotation, 50 ms acoustic-driven animation, responsive layout, and reduced-motion support.
 - Hosted mode behind HTTPS with Render/Docker configuration, host/origin checks, secure visitor cookies, isolated conversations and retry caches, and per-process/per-visitor completion budgets.
 - Hosted credentials are supplied by the owner. Visitors cannot change them and never receive the key. Public setup form is hidden/disabled.
 - A visible Live/Offline mode, an explicitly scripted offline scene, typed actions with no invented audio features, and three labelled synthetic feature tours that never call the LLM.
-- Browser Whisper tiny.en recognition, Kokoro voices, automatic spoken replies, sustained-speech interruption, HRTF/distance/reverb processing, and vocal-delivery modulation. See docs/VOICES.md for verification limits.
+- Browser Whisper base.en by default (tiny.en selectable), ASR-only bounded gain/DC removal, 250 ms pre-roll, early recognition at a short pause, Kokoro voices, automatic streamed spoken replies, sustained-speech interruption, HRTF/distance/reverb processing, and vocal-delivery modulation. See docs/VOICES.md for verification limits.
 - Continuous stereo ambience driven by acoustic frames, optional browser vibration preview, ten auditionable Kokoro voices, and flat system-voice fallback.
 - `docs/DEPLOYMENT.md`, `docs/SUBMISSION.md`, `render.yaml`, `Dockerfile`, and a GitHub Actions test/build workflow.
 
+## Latest submission requirements
+
+The user pasted the complete AMD Developer Hackathon Act 3 kickoff transcript. EchoSphere fits **Track 4: Create a New Kind of Experience**: show at least two different inputs/audiences/situations, explain authored vs generated work, quality, costs and who pays. Added quiet/distant typed comparison cards (no fabricated acoustic input), docs/START-HERE.md, docs/PRESENTATION.md, and a cost/evidence worksheet in docs/SUBMISSION.md. The presentation must be at most five minutes. Confirm the actual deadline in the LabLab form; the transcript names noon for on-site submissions and gives conflicting workspace expiry dates.
+
+The phrase “at least two Evolus building blocks” is specific to the separate Evolus Business Agents challenge: agent plus knowledge library/workflow/tool/etc, alongside a business process. This app uses one Evolus agent; its browser models and AMD endpoint do not count as a second platform component. Do not claim that prize eligibility. See docs/EVOLUS-BUILDING-BLOCKS.md. Twitch and YouTube fetches are blocked; use the supplied transcript, not invented video observations.
+
+The guide now requests an opening during model loading, supports one automatic nudge after 20 seconds of idle per interaction, and can be continued manually. The backend supports SSE from Evolus and NDJSON to the browser; complete sentences can start synthesis before the full reply finishes. Barge-in aborts obsolete provider work and stops old audio. Scene-cue rules automatically choose placement; manual controls disable automatic placement. Histories persist across microphone restart within the same tab.
+
+A real streamed opening returned English, with first text at 5680 ms and total 5701 ms; most chunks arrived together. Do not claim instant semantic response or that streaming fixes the AMD/provider latency. The fake-microphone live HTTP/streamed backend test also returned English.
+
+Final `test:judge-live` passed with two real typed-input responses: quiet “right here by your side” -> intimate (0.65 m); distant “from the far right” -> hall (7 m, 55° right). Whole browser request times were 4098 and 3092 ms, excluding ASR/TTS. Live checks exposed a director bug: background echoes should not move a nearby narrator away. The director now preserves near distance through ambient echoes, handles at/by-your-side and far-left/right cues, and uses the participant's words as placement context. Real generated examples are covered by deterministic regressions. Do not call these physical-audio or model-inference tests.
+
 ## Outstanding steps — models and public hosting
 
-The real model imports and download-failure recovery are tested, but successful Whisper/Kokoro inference is NOT verified. Hugging Face returns proxy HTTP 403 in this cloud environment. A network draft adds huggingface.co, *.huggingface.co and *.hf.co while preserving api.evolus.ai and app.evolus.ai. User application/publication is still required; saving the draft did not update the running proxy. After access is applied, run npm run test:models (real Kokoro → Whisper, no Evolus credits), then test a real conversation. Do not treat mocks as real speech recognition or voice-quality evidence.
+The real model imports and download-failure recovery are tested, but successful Whisper/Kokoro inference is NOT verified. Hugging Face returns proxy HTTP 403 in this cloud environment. A network draft includes huggingface.co, *.huggingface.co, *.hf.co, cdn.jsdelivr.net, www.twitch.tv and www.youtube.com while preserving api.evolus.ai and app.evolus.ai. User application/publication is still required; saving the draft did not update the running proxy. After access is applied, run npm run test:models (real Kokoro → Whisper, no Evolus credits), then test a real conversation. Do not treat mocks as real speech recognition or voice-quality evidence.
 
 ## Public hosting
 
@@ -65,12 +77,13 @@ npm run test:submission
 
 `npm start` or `Start EchoSphere.cmd` also opens the local browser. Do not create Codex localhost preview links; this onboarding UI does not expose them to the user's laptop microphone.
 
-- `npm test`: 47 tests at this handoff, covering acoustic/capture regression, local setup, persistent settings, launcher startup, hosted visitor isolation, budgets, and demo behavior.
+- `npm test`: 54 tests at this handoff, covering acoustic/capture regression, local setup, persistent settings, launcher startup, hosted visitor isolation, budgets, and demo behavior.
 - `test:browser`: microphone→JSON flow with synthetic microphone input; permission/cancellation/AbortError fallback; local key setup and mock agent delivery. It explicitly skips direct-file navigation if cloud browser policy blocks `file://`.
 - `test:submission`: pointer/keyboard rotation, mobile first screen, voice-reactive energy, reduced-motion behavior, no-key/no-microphone offline judge flow, and a simulated HTTPS proxy with secure cookies, hosted text delivery, and hidden credential form. Provider replies are mocked in this suite.
 - `test:voice`: measures actual HRTF left/right output, distance attenuation and reverb tail; real worker imports/failure recovery; mocked inference playback and cancellation.
-- `test:conversation`: complete fake-microphone recognition/narration flow, automatic spatial playback, interruption and warmup cancellation. ASR/TTS/Evolus are mocked.
+- `test:conversation`: guide-led opening, fake-microphone recognition/narration flow, discarding speculative fragments when speech resumes, streamed replies, automatic scene placement, spatial playback, interruption and warmup cancellation. ASR/TTS/Evolus are mocked.
 - `test:models`: optional real public model downloads and Kokoro → Whisper round trip; currently blocked by network policy.
+- `test:judge-live`: optional two real Evolus calls for the quiet/distant comparison. It checks actual story cues and records responses at /tmp/echosphere-judge-comparison.json; it does not test speech inference or a deployed public host.
 - `test:live`: optional; makes one paid real completion with the configured key. `ECHOSPHERE_CAPTURE_MODE=compatibility npm run test:live` tests the fallback. Do not repeatedly spend API calls for unrelated cosmetic edits.
 - Build output in `dist/` is committed. Rebuild after editing browser source. The CI checks generated output matches source.
 - Docker build and non-root runtime verification passed: health endpoint, hosted secure session, page/bundle delivery, and no local credential files in the image. An image may need rebuilding in a new environment.

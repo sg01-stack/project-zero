@@ -1,6 +1,6 @@
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
 const root = new URL('../', import.meta.url);
-const sources = await Promise.all(['src/audio-engine.mjs', 'src/capture.mjs', 'src/experience.mjs', 'src/visuals.mjs', 'src/voice.mjs', 'src/conversation.mjs', 'src/app.mjs'].map(p => readFile(new URL(p, root), 'utf8')));
+const sources = await Promise.all(['src/audio-engine.mjs', 'src/capture.mjs', 'src/experience.mjs', 'src/visuals.mjs', 'src/voice.mjs', 'src/conversation.mjs', 'src/narrative.mjs', 'src/app.mjs'].map(p => readFile(new URL(p, root), 'utf8')));
 // A classic script also loads when index.html is opened directly from disk.
 // External ES modules are blocked by browsers for file:// documents.
 const bundle = `(() => {\n'use strict';\n${sources.map(s => s.replace(/^import .*;\n/gm, '').replace(/^export /gm, '')).join('\n')}\n})();`;

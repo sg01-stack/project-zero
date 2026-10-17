@@ -2,6 +2,7 @@ import { OfflineStory, SceneAudio, sceneControls, tourFrame } from './experience
 import { AtomExperience } from './visuals.mjs';
 import { VOICE_PRESETS, voicePosition, speechSegments, SpatialVoice, NeuralVoice } from './voice.mjs';
 import { SpeechRecognizer, SpeechBuffer, vocalDelivery } from './conversation.mjs';
+import { storyPlacement, NarrationBuffer, readNarrationResponse } from './narrative.mjs';
 import { AudioEngine } from './audio-engine.mjs';
 import { WORKLET_SOURCE, TurnDispatcher, createLocalJsonHandler, createCompatibilityCapture } from './capture.mjs';
 
@@ -54,13 +55,16 @@ const spatialVoice = new SpatialVoice(position => {
   $('voiceDot').style.left = `${50 + Math.sin(angle) * radius}%`;
   $('voiceDot').style.top = `${50 - Math.cos(angle) * radius}%`;
 });
-const neuralVoice = new NeuralVoice(message => { $('voiceStatus').textContent = message; });
-const recognizer = new SpeechRecognizer(message => { $('conversationStatus').textContent = message; });
+const neuralVoice = new NeuralVoice(message => { $('voiceStatus').textContent = message; if (preparingConversation) $('heroStatus').textContent = message; });
+const recognizer = new SpeechRecognizer(message => { $('conversationStatus').textContent = message; if (preparingConversation) $('heroStatus').textContent = message; });
 const speechBuffer = new SpeechBuffer();
 let conversationRequested = false, conversationActive = false, preparingConversation = false, conversationEpoch = 0;
 let recognitionChain = Promise.resolve(), recognitionPending = 0, interactionVersion = 0, pendingVoice = null, bargeMs = 0, barged = false, interruptions = 0;
 let deliveryProfile = { intensity: 0.3, soft: false };
+let activeRequest = null, speculativeRecognition = null, storyStarted = false;
+let lastStoryActivity = performance.now(), idleNudgeUsed = false, scenePreset = 'guide';
 const turnVersions = new Map();
+const comparisonTurns = new Map();
 const neuralChoices = [['af_heart', 'Heart · American'], ['af_bella', 'Bella · American'], ['af_nicole', 'Nicole · American'],
   ['af_sarah', 'Sarah · American'], ['am_michael', 'Michael · American'], ['am_fenrir', 'Fenrir · American'],
   ['bf_emma', 'Emma · British'], ['bf_isabella', 'Isabella · British'], ['bm_george', 'George · British'], ['bm_fable', 'Fable · British']];
@@ -77,6 +81,7 @@ function useOfflineScene() {
   void dispatcher.setHandler(async payload => {
     const reply = offlineStory.reply(payload);
     showReply(reply, 'Offline scripted scene · no LLM');
+    recordComparison(payload.turn_id, reply, 'Offline script');
     offerAutomaticReply(reply, payload.turn_id);
     window.dispatchEvent(new CustomEvent('echosphere:response', { detail: { turn_id: payload.turn_id, reply, source: 'offline_script' } }));
   });
@@ -105,19 +110,31 @@ function logPayload(payload) {
 }
 
 function onTurn(payload) {
+  idleNudgeUsed = false; lastStoryActivity = performance.now();
+  pendingVoice = null;
+  if (voiceBusy && conversationActive) void stopNarration(true);
   if (conversationRequested && payload.event === 'user_turn_complete') {
     if (!recognizer.ready || !conversationActive) { $('conversationStatus').textContent = 'Conversation is preparing or paused. Wait for Ready before speaking.'; return; }
     const pcm = speechBuffer.between(payload.timing.start_ms, payload.timing.end_ms);
     const epoch = conversationEpoch, version = ++interactionVersion;
+    const speculative = speculativeRecognition?.turnId === payload.turn_id && speculativeRecognition.endMs === payload.timing.end_ms ? speculativeRecognition : null;
+    speculativeRecognition = null;
     if (recognitionPending >= 4) { $('conversationStatus').textContent = 'Speech recognition is catching up. Pause briefly, or type your action below.'; return; }
     recognitionPending++;
     recognitionChain = recognitionChain.then(async () => {
       if (epoch !== conversationEpoch) return;
       $('conversationStatus').textContent = 'Understanding your words locally…';
-      const result = await recognizer.transcribe(pcm);
+      // Recognition can start at the first short pause. Reuse it only if the
+      // utterance did not resume; speculative text is never sent to the LLM.
+      let result = speculative ? await speculative.promise : null;
+      if (!result || result.error) {
+        await recognizer.idle;
+        if (epoch !== conversationEpoch) return;
+        result = await recognizer.transcribe(pcm);
+      }
       if (epoch !== conversationEpoch) return;
       if (!result.text.trim()) { $('conversationStatus').textContent = 'No words recognized. Please repeat, or type your action.'; return; }
-      payload.transcript = { text: result.text, source: 'local_whisper_tiny_en', is_final: true };
+      payload.transcript = { text: result.text, source: result.source || `local_whisper_${recognizer.model}_en`, is_final: true };
       payload.speech_evidence = { ...payload.speech_evidence, words_available: true, speech_confirmed_by_asr: true, source: 'acoustic_heuristics_and_asr' };
       $('transcriptText').textContent = result.text;
       $('conversationStatus').textContent = conversationActive ? 'Words recognized. The narrator is responding; you can keep speaking.' : 'Words recognized. A text response will arrive; conversation playback is paused.';
@@ -129,6 +146,8 @@ function onTurn(payload) {
   submitTurn(payload, ++interactionVersion);
 }
 function submitTurn(payload, version) {
+  payload.session_id = textSession;
+  if (payload.transcript?.text) placeNarration(payload.transcript.text);
   turnVersions.set(payload.turn_id, version);
   if (turnVersions.size > 100) turnVersions.delete(turnVersions.keys().next().value);
   logPayload(payload);
@@ -142,7 +161,30 @@ function submitTurn(payload, version) {
 
 function offerAutomaticReply(text, turnId) {
   const version = turnVersions.get(turnId);
-  if (conversationActive && version === interactionVersion) pendingVoice = { text, version };
+  if ((conversationActive || conversationRequested) && version === interactionVersion) {
+    if (!pendingVoice || pendingVoice.version !== version) pendingVoice = { segments: [], version };
+    pendingVoice.segments.push(text);
+  }
+}
+
+function requestStory(event = 'story_continue') {
+  if (!['live', 'offline'].includes(narrativeMode) || queuedTurns || recognitionPending) return;
+  storyStarted = true; lastStoryActivity = performance.now();
+  submitTurn({ schema_version: '1.0', event, turn_id: `story:${crypto.randomUUID()}`, session_id: textSession,
+    transcript: null, prosody_analysis: null,
+    llm_guidance: event === 'story_start' ? 'Lead the opening, introduce the guide and invite participation. No user speech has occurred.'
+      : 'Offer one gentle story development. The participant has not supplied new words; do not invent their decisions.' }, ++interactionVersion);
+}
+
+function placeNarration(text) {
+  if (!$('autoPlacement').checked) return;
+  const scene = storyPlacement(text, scenePreset);
+  if (scene.preset !== scenePreset) spatialVoice.sceneStarted = null;
+  scenePreset = scene.preset;
+  $('voicePreset').value = scenePreset; voiceMotion = scene.options.motion;
+  for (const [id, key] of [['voiceAngle', 'angle'], ['voiceDistance', 'distance'], ['voiceRoom', 'room'], ['voiceSpeed', 'speed']]) $(id).value = scene.options[key];
+  configureVoice();
+  $('spatialStatus').textContent = `Following the story: ${$('voicePreset').selectedOptions[0].textContent}. Your vocal delivery continues to shape distance and room tone.`;
 }
 
 function onFrame(frame) {
@@ -152,17 +194,30 @@ function onFrame(frame) {
   deliveryProfile = vocalDelivery(frame, deliveryProfile);
   if (conversationActive) {
     spatialVoice.modulate(deliveryProfile);
-    const speaking = ['voiced_speech', 'whisper_like'].includes(frame.state);
+    const speaking = ['voiced_speech', 'whisper_like', 'uncertain_audio'].includes(frame.state);
+    if (speaking) engine.options.endSilenceMs = frame.state === 'whisper_like' ? 850 : 650;
+    if (speaking || frame.state === 'candidate' || frame.state === 'pause' || voiceBusy || pendingVoice || queuedTurns || recognitionPending) lastStoryActivity = performance.now();
     if (speaking && (voiceBusy || pendingVoice || transportState === 'sending')) {
       bargeMs += 50;
-      if (bargeMs >= 300 && !barged) {
+      if (bargeMs >= 200 && !barged) {
         barged = true; interactionVersion++; interruptions++; pendingVoice = null;
+        activeRequest?.abort();
         void stopNarration(true);
         $('conversationStatus').textContent = 'Listening to you. Narration interrupted; the microphone stays active.';
       }
     } else if (!speaking) { bargeMs = 0; barged = false; }
-    if (pendingVoice && pendingVoice.version === interactionVersion && ['silence', 'calibrating'].includes(frame.state) && !voiceBusy) {
-      const reply = pendingVoice.text; pendingVoice = null; void playNarration(reply, null, true);
+    if (frame.state === 'pause' && engine.silenceMs >= 250 && engine.turn && recognizer.ready && !recognizer.pending && !recognitionPending &&
+        (speculativeRecognition?.turnId !== engine.turn.id || speculativeRecognition.endMs !== engine.turn.lastActiveMs)) {
+      const { id: turnId, startMs, lastActiveMs: endMs } = engine.turn;
+      speculativeRecognition = { turnId, endMs, promise: recognizer.transcribe(speechBuffer.between(startMs, endMs)).catch(error => ({ error })) };
+    }
+    if (pendingVoice && pendingVoice.version === interactionVersion && frame.state === 'silence' && !voiceBusy) {
+      const reply = pendingVoice.segments.shift(); if (!pendingVoice.segments.length) pendingVoice = null;
+      void playNarration(reply, null, true);
+    }
+    if (frame.state === 'silence' && !voiceBusy && !pendingVoice && !queuedTurns && !recognitionPending &&
+        $('storyLead').checked && !idleNudgeUsed && performance.now() - lastStoryActivity > 20000) {
+      idleNudgeUsed = true; requestStory();
     }
   }
   $('sceneStatus').textContent = `Scene intensity: ${Math.round(controls.intensity * 100)}% · stereo position: ${controls.pan < 0 ? 'left' : controls.pan > 0 ? 'right' : 'centre'}. ${sceneAudio.context ? 'Ambient audio on.' : 'Sound off.'}`;
@@ -187,7 +242,7 @@ function onFrame(frame) {
 }
 
 function newEngine() {
-  return new AudioEngine({ onFrame, onTurn, onEvent(payload) {
+  return new AudioEngine({ endSilenceMs: conversationRequested ? 650 : 800, onFrame, onTurn, onEvent(payload) {
     logPayload(payload);
     window.dispatchEvent(new CustomEvent('echosphere:audio-event', { detail: structuredClone(payload) }));
     if (conversationActive && ['uncertain_short_audio', 'uncertain_audio'].includes(payload.audio_type)) {
@@ -230,12 +285,15 @@ async function initializeExperience() {
     $('voiceEngine').value = 'neural'; refreshVoices();
     $('initializeLabel').textContent = 'Preparing conversation. Click to Stop.';
     $('heroStatus').textContent = 'Downloading speech models into this browser. Progress is in Story & controls.';
-    $('conversationStatus').textContent = 'Loading local speech recognition and neural voices. First use downloads roughly 200 MB or more; do not speak until Ready.';
-    await Promise.all([recognizer.load(), neuralVoice.load()]);
+    $('conversationStatus').textContent = 'Loading speech recognition and neural voices. The first download can be several hundred MB; wait for Ready.';
+    // Fetch the opening while local models load, instead of waiting for the
+    // participant to manufacture the first line of the story.
+    if ($('storyLead').checked) requestStory(storyStarted ? 'story_continue' : 'story_start');
+    await Promise.all([recognizer.load($('recognitionModel').value), neuralVoice.load()]);
     if (!running || epoch !== conversationEpoch) return;
-    conversationActive = true; engine = newEngine(); speechBuffer.clear(); lastFrameState = null;
+    conversationActive = true; engine = newEngine(); speechBuffer.clear(); speculativeRecognition = null; lastFrameState = null; lastStoryActivity = performance.now();
     $('initializeLabel').textContent = 'Listening. Click to Pause.';
-    $('conversationStatus').textContent = `Ready · ${narrativeMode === 'live' ? 'live Evolus narration' : 'offline scripted scene'}. Stay quiet for 1.2 seconds, then speak. Responses play automatically; speak to interrupt.`;
+    $('conversationStatus').textContent = `Ready · ${narrativeMode === 'live' ? 'live Evolus narration' : 'offline scripted scene'}. Stay quiet for 1.2 seconds. The guide will begin; speak any time to interrupt.`;
   } catch (error) {
     if (epoch === conversationEpoch) {
       const message = `Conversation could not start: ${error.message}`;
@@ -421,6 +479,7 @@ async function releaseAudio() {
 
 async function stop({ preservePlayback = false } = {}) {
   if (stopping || !running) return;
+  const wasConversation = conversationRequested;
   stopping = true;
   $('startBtn').disabled = true;
   source?.disconnect();
@@ -437,9 +496,11 @@ async function stop({ preservePlayback = false } = {}) {
   engine?.finish('manual_stop');
   if (conversationRequested) { void sceneAudio.disable(); $('ambienceToggle').checked = false; }
   conversationActive = false; conversationRequested = false; pendingVoice = null;
+  if (wasConversation || preparingConversation) activeRequest?.abort();
+  speculativeRecognition = null; idleNudgeUsed = true;
   $('conversationStatus').textContent = 'Conversation paused. Initialize to resume.';
   if (!preservePlayback) void stopNarration();
-  if (preparingConversation) { conversationEpoch++; recognizer.cancel(); }
+  if (wasConversation || preparingConversation) { conversationEpoch++; if (recognizer.pending) recognizer.cancel(); }
   await releaseAudio();
   lastFrameState = null;
   $('startBtn').textContent = 'Start microphone';
@@ -511,17 +572,36 @@ async function connectEvolus({ selectLive = true } = {}) {
     $('deliveryStatus').textContent = 'Live narration ready. Speak or type your next action.';
     // Attach the handler without blocking setup on previously queued turns.
     void dispatcher.setHandler(async payload => {
-      const resultResponse = await fetch('/api/turn', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload), signal: AbortSignal.timeout(75000),
-      });
-      const result = await resultResponse.json();
-      if (!resultResponse.ok) throw new Error(result.error || `Backend returned HTTP ${resultResponse.status}`);
-      if (result.turn_id !== payload.turn_id || typeof result.reply !== 'string') throw new Error('Unexpected agent response.');
-      showReply(result.reply, 'Live Evolus agent');
-      offerAutomaticReply(result.reply, payload.turn_id);
-      $('agentStatus').textContent = 'EchoSphere agent connected — response received.';
-      window.dispatchEvent(new CustomEvent('echosphere:response', { detail: result }));
+      const controller = new AbortController(); activeRequest = controller;
+      const sentences = new NarrationBuffer(); let streamed = false, partial = '';
+      const version = turnVersions.get(payload.turn_id);
+      try {
+        const resultResponse = await fetch('/api/turn', {
+          method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'application/x-ndjson' },
+          body: JSON.stringify(payload), signal: AbortSignal.any([controller.signal, AbortSignal.timeout(75000)]),
+        });
+        const result = await readNarrationResponse(resultResponse, delta => {
+          if (version !== interactionVersion || controller.signal.aborted) return;
+          streamed = true; partial += delta;
+          $('replySource').textContent = 'Live Evolus agent · arriving'; $('agentReply').textContent = partial;
+          for (const sentence of sentences.push(delta)) offerAutomaticReply(sentence, payload.turn_id);
+        });
+        if (result.turn_id !== payload.turn_id || typeof result.reply !== 'string') throw new Error('Unexpected agent response.');
+        recordComparison(payload.turn_id, result.reply, 'Live Evolus agent');
+        if (version === interactionVersion && !controller.signal.aborted) {
+          showReply(result.reply, 'Live Evolus agent');
+          if (streamed) { for (const sentence of sentences.push('', true)) offerAutomaticReply(sentence, payload.turn_id); }
+          else offerAutomaticReply(result.reply, payload.turn_id);
+        }
+        $('agentStatus').textContent = 'EchoSphere agent connected — response received.';
+        window.dispatchEvent(new CustomEvent('echosphere:response', { detail: result }));
+      } catch (error) {
+        recordComparison(payload.turn_id, controller.signal.aborted ? 'Interrupted. Try this input again when ready.' : error.message, 'Request incomplete');
+        if (!controller.signal.aborted) {
+          if (version === interactionVersion) { pendingVoice = null; void stopNarration(conversationActive); }
+          throw error;
+        }
+      } finally { if (activeRequest === controller) activeRequest = null; }
     });
     return true;
   } catch (error) {
@@ -546,6 +626,11 @@ function showReply(reply, sourceLabel = 'Live Evolus agent') {
   spokenReply = reply;
   $('speakBtn').disabled = voiceBusy;
   $('heroStory').textContent = 'Your story has a new response. Read it below ↓';
+}
+
+function recordComparison(turnId, reply, source) {
+  const output = comparisonTurns.get(turnId);
+  if (output) { $(output).textContent = `${source}: ${reply}`; comparisonTurns.delete(turnId); }
 }
 
 async function testAgent() {
@@ -643,7 +728,7 @@ async function playNarration(text, file = null, automatic = false) {
     const error = await unlocked; if (error) throw error;
     if (run !== speechRun) return;
     window.speechSynthesis?.cancel();
-    spatialVoice.sceneStarted = null;
+    if (!automatic) spatialVoice.sceneStarted = null;
     if (file) {
       const decoded = await spatialVoice.context.decodeAudioData(await file.arrayBuffer());
       if (run !== speechRun) return;
@@ -658,7 +743,7 @@ async function playNarration(text, file = null, automatic = false) {
       $('playbackStatus').textContent = 'Playing your recording in 3D. Microphone paused.';
       await spatialVoice.play(mono, decoded.sampleRate);
     } else if (neural) {
-      $('playbackStatus').textContent = 'Preparing local neural narration. Microphone paused.';
+      $('playbackStatus').textContent = automatic ? 'Preparing the next spoken line. Still listening to you.' : 'Preparing local neural narration. Microphone paused.';
       await neuralVoice.load();
       const segments = speechSegments(text), voice = $('voiceSelect').value;
       await neuralVoice.idle;
@@ -671,9 +756,10 @@ async function playNarration(text, file = null, automatic = false) {
         const result = await pending; if (result.error) throw result.error;
         const { audio } = result;
         if (run !== speechRun) return;
+        placeNarration(segments[i]);
         if (i + 1 < segments.length) pending = generate(segments[i + 1]);
         $('playbackStatus').textContent = `Playing neural narration in 3D · passage ${i + 1}/${segments.length}.${automatic ? ' Speak to interrupt.' : ''}`;
-        await spatialVoice.play(audio.pcm, audio.sampleRate, i + 1 === segments.length);
+        await spatialVoice.play(audio.pcm, audio.sampleRate, !automatic && i + 1 === segments.length);
       }
       $('voiceStatus').textContent = 'Neural voice ready. Change voices to compare another delivery.';
     } else {
@@ -689,7 +775,7 @@ async function playNarration(text, file = null, automatic = false) {
       systemQueued = true;
       return;
     }
-    if (run === speechRun) $('playbackStatus').textContent = 'Playback finished. Start the microphone when you are ready.';
+    if (run === speechRun) $('playbackStatus').textContent = automatic ? 'The guide is listening. Speak whenever you like.' : 'Playback finished. Start the microphone when you are ready.';
   } catch (error) { if (run === speechRun) $('playbackStatus').textContent = error.message; }
   finally {
     if (run === speechRun && !systemQueued) { setVoiceBusy(false); if (!conversationActive) await spatialVoice.close(); }
@@ -700,7 +786,7 @@ $('voiceEngine').addEventListener('change', () => { void stopNarration(); refres
 $('refreshVoicesBtn').addEventListener('click', refreshVoices);
 window.speechSynthesis?.addEventListener('voiceschanged', () => { if ($('voiceEngine').value === 'system') refreshVoices(); });
 $('previewVoiceBtn').addEventListener('click', () => void playNarration('The observatory lights fade. I am beside you. Listen carefully. Someone is moving beyond the door.'));
-$('stopVoiceBtn').addEventListener('click', () => { pendingVoice = null; interactionVersion++; void stopNarration(conversationActive); $('playbackStatus').textContent = `Voice stopped. ${running ? 'Microphone is still listening.' : 'Microphone remains off.'}`; });
+$('stopVoiceBtn').addEventListener('click', () => { pendingVoice = null; interactionVersion++; activeRequest?.abort(); idleNudgeUsed = true; void stopNarration(conversationActive); $('playbackStatus').textContent = `Voice stopped. ${running ? 'Microphone is still listening.' : 'Microphone remains off.'}`; });
 $('loadVoiceBtn').addEventListener('click', async () => {
   if (voiceBusy) return;
   const run = ++speechRun; setVoiceBusy(true);
@@ -710,11 +796,13 @@ $('loadVoiceBtn').addEventListener('click', async () => {
   finally { if (run === speechRun) setVoiceBusy(false); }
 });
 $('voicePreset').addEventListener('change', () => {
+  $('autoPlacement').checked = false;
   const preset = VOICE_PRESETS[$('voicePreset').value]; voiceMotion = preset.motion;
   for (const [id, key] of [['voiceAngle', 'angle'], ['voiceDistance', 'distance'], ['voiceRoom', 'room'], ['voiceSpeed', 'speed']]) $(id).value = preset[key];
   configureVoice();
 });
 for (const id of ['voiceAngle', 'voiceDistance', 'voiceRoom', 'voiceSpeed']) $(id).addEventListener('input', () => {
+  $('autoPlacement').checked = false;
   if (id === 'voiceAngle') voiceMotion = 'still'; configureVoice();
 });
 $('voiceFile').addEventListener('change', event => {
@@ -726,8 +814,13 @@ $('playFileBtn').addEventListener('click', () => void playNarration('', recordin
 refreshVoices(); configureVoice();
 $('prepareConversationBtn').addEventListener('click', () => { if (running) void stop().then(initializeExperience); else void initializeExperience(); });
 $('conversationToggle').addEventListener('change', () => {
-  if (!$('conversationToggle').checked) { conversationActive = false; conversationRequested = false; pendingVoice = null; void stopNarration(); }
+  if (!$('conversationToggle').checked) { conversationActive = false; conversationRequested = false; pendingVoice = null; activeRequest?.abort(); void stopNarration(); }
 });
+$('recognitionModel').addEventListener('change', () => {
+  if (running) void stop();
+  $('conversationStatus').textContent = 'Recognition model changed. Initialize again to load it.';
+});
+$('continueStoryBtn').addEventListener('click', () => { idleNudgeUsed = true; requestStory(storyStarted ? 'story_continue' : 'story_start'); });
 
 // Register an async handler that resolves only after your server accepts a turn.
 // Keep adapters local. Do not enable browser SpeechRecognition implicitly:
@@ -738,7 +831,7 @@ window.echoSphere = Object.freeze({
   connectLocalEndpoint: options => dispatcher.setHandler(createLocalJsonHandler(options)),
   retryDelivery: () => dispatcher.retry(),
   addTranscript: result => engine?.setTranscript(result) || false,
-  getStatus: () => ({ visual: visuals.getState(), conversation: { active: conversationActive, preparing: preparingConversation, recognitionReady: recognizer.ready, recognitionPending, interactionVersion, interruptions }, voice: { busy: voiceBusy, neuralReady: neuralVoice.ready, engine: $('voiceEngine').value, spatial: spatialVoice.options, delivery: deliveryProfile }, narrativeMode, tourActive, running, starting, captureMode, frameCount, diagnostic: structuredClone(diagnostic), agentReady, turnId: engine?.turn?.id || null, queuedTurns, transportState }),
+  getStatus: () => ({ visual: visuals.getState(), conversation: { active: conversationActive, preparing: preparingConversation, recognitionReady: recognizer.ready, recognitionModel: recognizer.model, recognitionPending, interactionVersion, interruptions, storyStarted }, voice: { busy: voiceBusy, neuralReady: neuralVoice.ready, engine: $('voiceEngine').value, spatial: spatialVoice.options, delivery: deliveryProfile }, narrativeMode, tourActive, running, starting, captureMode, frameCount, diagnostic: structuredClone(diagnostic), agentReady, turnId: engine?.turn?.id || null, queuedTurns, transportState }),
 });
 $('startBtn').disabled = false;
 $('initializeBtn').disabled = false;
@@ -752,16 +845,29 @@ $('offlineBtn').addEventListener('click', useOfflineScene);
 $('textForm').addEventListener('submit', event => {
   event.preventDefault();
   const text = $('storyText').value.trim();
+  if (sendStoryText(text)) $('storyText').value = '';
+});
+function sendStoryText(text, comparisonOutput = null) {
   if (!text) return;
   if (narrativeMode === 'waiting') {
     $('modeHelp').textContent = 'Choose Try offline scene or connect live narration first, then send your text.';
     return;
   }
   if (queuedTurns >= 100) { $('modeHelp').textContent = 'Deliver or clear your queued turns before sending more text.'; return; }
-  onTurn({ schema_version: '1.0', event: 'user_text', session_id: engine?.sessionId || textSession,
-    turn_id: `text:${crypto.randomUUID()}`, transcript: { text, source: 'typed', is_final: true },
+  const turnId = `text:${crypto.randomUUID()}`;
+  if (comparisonOutput) {
+    for (const [key, value] of comparisonTurns) if (value === comparisonOutput) comparisonTurns.delete(key);
+    comparisonTurns.set(turnId, comparisonOutput); $(comparisonOutput).textContent = 'Waiting for this story response…';
+  }
+  onTurn({ schema_version: '1.0', event: 'user_text', session_id: textSession,
+    turn_id: turnId, transcript: { text, source: 'typed', is_final: true },
     prosody_analysis: null, llm_guidance: 'This is typed user input. No acoustic measurements or inferred emotion accompany it.' });
-  $('storyText').value = '';
+  return true;
+}
+for (const button of document.querySelectorAll('[data-story-example]')) button.addEventListener('click', () => {
+  const quiet = button.dataset.storyExample === 'quiet';
+  sendStoryText(quiet ? 'I whisper to the guide: please stay beside me and speak softly while we listen at the door.'
+    : 'I call across the great hall: is someone there? Let a distant voice answer from the right.', quiet ? 'quietExampleResult' : 'distantExampleResult');
 });
 $('ambienceToggle').addEventListener('change', async event => {
   event.target.dataset.userChoice = 'true';

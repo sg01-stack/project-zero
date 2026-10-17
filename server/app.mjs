@@ -13,12 +13,13 @@ const json = (res, status, data) => {
 };
 
 function validatePayload(p) {
-  if (!p || p.schema_version !== '1.0' || !['user_turn_complete', 'user_text'].includes(p.event) ||
+  if (!p || p.schema_version !== '1.0' || !['user_turn_complete', 'user_text', 'story_start', 'story_continue'].includes(p.event) ||
       typeof p.turn_id !== 'string' || !p.turn_id.length || p.turn_id.length > 160 ||
       typeof p.session_id !== 'string' || !p.session_id.length || p.session_id.length > 128 ||
       (p.event === 'user_turn_complete' && (!['voiced_speech', 'whisper_like', 'uncertain_audio'].includes(p.prosody_analysis?.dominant_style) ||
       !Number.isFinite(p.prosody_analysis?.average_rms_dbfs))) ||
       (p.event === 'user_text' && (p.prosody_analysis !== null || typeof p.transcript?.text !== 'string' || !p.transcript.text.trim())) ||
+      (['story_start', 'story_continue'].includes(p.event) && (p.transcript !== null || p.prosody_analysis !== null)) ||
       (p.transcript !== null && (typeof p.transcript?.text !== 'string' || p.transcript.text.length > 20000))) {
     throw Object.assign(new Error('Invalid EchoSphere turn payload.'), { statusCode: 400 });
   }
@@ -124,6 +125,13 @@ export function createApplicationServer({ root, env = process.env, completeTurn,
         const id = hosting.hosted ? `${visitorId}:${payload.turn_id}` : payload.turn_id;
         const sessionKey = hosting.hosted ? `${visitorId}:${payload.session_id}` : payload.session_id;
         const hash = createHash('sha256').update(JSON.stringify(payload)).digest('hex');
+        const streaming = req.headers.accept === 'application/x-ndjson';
+        const controller = new AbortController();
+        const sendEvent = event => {
+          if (res.destroyed) return;
+          if (!res.headersSent) res.writeHead(200, { 'Content-Type': 'application/x-ndjson', 'Cache-Control': 'no-store', 'X-Accel-Buffering': 'no', 'X-Content-Type-Options': 'nosniff' });
+          res.write(JSON.stringify(event) + '\n');
+        };
         const existing = completed.get(id) || inflight.get(id);
         if (existing && existing.hash !== hash) return json(res, 409, { error: 'Turn ID was reused with different content.' });
         if (completed.has(id)) return json(res, 200, completed.get(id).result);
@@ -133,10 +141,15 @@ export function createApplicationServer({ root, env = process.env, completeTurn,
           access.consume(visitorId);
           busySessions.add(sessionKey);
           const history = sessions.get(sessionKey) || [];
+          // Cancel only the request owned by this connection. Concurrent
+          // retries may await the result but must not cancel another visitor.
+          if (streaming) res.on('close', () => { if (!res.writableEnded) controller.abort(); });
+          const options = { signal: controller.signal, onText: streaming ? text => sendEvent({ type: 'delta', text }) : undefined };
           const promise = Promise.resolve().then(() => completeTurn
-            ? completeTurn(payload, model, structuredClone(history))
-            : createEvolusClient({ apiKey, model })(payload, history)
+            ? completeTurn(payload, model, structuredClone(history), options)
+            : createEvolusClient({ apiKey, model })(payload, history, options)
           ).then(response => {
+            controller.signal.throwIfAborted();
             if (response?.turn_id !== payload.turn_id || typeof response.reply !== 'string' || !response.reply.trim()) {
               throw Object.assign(new Error('The agent returned an invalid response.'), { statusCode: 502 });
             }
@@ -149,15 +162,32 @@ export function createApplicationServer({ root, env = process.env, completeTurn,
             completed.set(id, { hash, result });
             if (completed.size > 256) completed.delete(completed.keys().next().value);
             return result;
+          }).catch(error => {
+            // Preserve what the participant said, but never save an unheard,
+            // interrupted assistant answer as if it were delivered in full.
+            if (controller.signal.aborted && payload.transcript?.text) {
+              sessions.delete(sessionKey);
+              sessions.set(sessionKey, [...history, { role: 'user', content: JSON.stringify(payload) }].slice(-12));
+              if (sessions.size > 32) sessions.delete(sessions.keys().next().value);
+            }
+            throw error;
           }).finally(() => { inflight.delete(id); busySessions.delete(sessionKey); });
           inflight.set(id, { hash, promise });
         }
-        return json(res, 200, await inflight.get(id).promise);
+        try {
+          const result = await inflight.get(id).promise;
+          if (streaming) { sendEvent({ type: 'complete', result }); return res.end(); }
+          return json(res, 200, result);
+        } catch (error) {
+          if (res.destroyed) return;
+          if (res.headersSent) { sendEvent({ type: 'error', error: error.statusCode ? error.message : 'Narration interrupted. Retry delivery.' }); return res.end(); }
+          throw error;
+        }
       }
       if (pathname.startsWith('/api/')) return json(res, 404, { error: 'Unknown API route or method.' });
       if (!['GET', 'HEAD'].includes(req.method)) { res.writeHead(405); return res.end(); }
       const allowed = pathname === '/' || pathname === '/index.html' || pathname === '/style.css' || pathname === '/dist/echosphere.html' ||
-        ['/dist/app.js', '/src/app.mjs', '/src/audio-engine.mjs', '/src/capture.mjs', '/src/experience.mjs', '/src/visuals.mjs', '/src/voice.mjs', '/src/conversation.mjs', '/src/neural-worker.mjs', '/src/asr-worker.mjs', '/vendor/kokoro.web.js', '/vendor/transformers.web.js'].includes(pathname);
+        ['/dist/app.js', '/src/app.mjs', '/src/audio-engine.mjs', '/src/capture.mjs', '/src/experience.mjs', '/src/visuals.mjs', '/src/voice.mjs', '/src/conversation.mjs', '/src/narrative.mjs', '/src/neural-worker.mjs', '/src/asr-worker.mjs', '/vendor/kokoro.web.js', '/vendor/transformers.web.js'].includes(pathname);
       const path = resolve(root, '.' + (pathname === '/' ? '/index.html' : pathname));
       if (!allowed || !path.startsWith(root.endsWith(sep) ? root : root + sep)) { res.writeHead(404); return res.end('Not found'); }
       const data = await readFile(path);

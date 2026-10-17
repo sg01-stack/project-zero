@@ -1,5 +1,7 @@
 # Put the judge demo online
 
+For click-by-click instructions, start with [START-HERE.md](START-HERE.md).
+
 Use **Render** for one HTTPS link that serves both the page and the backend. Judges need a browser; they do not install Node.js or Evolus Studio, and they do not enter an API key.
 
 ## Owner setup — once
@@ -12,7 +14,7 @@ Use **Render** for one HTTPS link that serves both the page and the backend. Jud
 
 The judge uses the deployed page, not a downloaded `index.html` or the GitHub source viewer. The owner configures the Evolus key once in Render; judges never need it. Evolus Studio is not involved in this web API connection.
 
-The page downloads Whisper/Kokoro weights and runtime assets directly to the visitor's browser on request. No model server or Python installation is needed. Visitors need access to `huggingface.co`, its `*.hf.co` download hosts, and `cdn.jsdelivr.net`. Initial downloads can exceed 200 MB. Warm the models before a timed presentation, and verify on the target browser; no instant first-load or arbitrary-device latency guarantee is made.
+The page downloads Whisper/Kokoro weights and runtime assets directly to the visitor's browser on request. No model server or Python installation is needed. Visitors need access to `huggingface.co`, its `*.hf.co` download hosts, and `cdn.jsdelivr.net`. Initial downloads can be several hundred MB with the default base English recognizer. Warm the models before a timed presentation, and verify on the target browser; no instant first-load or arbitrary-device latency guarantee is made.
 
 The free plan is selected to avoid an unexpected charge. Free instances can sleep when idle and need time to wake. If an instant, always-on judging link is required, select an appropriate paid instance in Render after reviewing its price. Neither hosting nor the Evolus service can be guaranteed flawless or uninterrupted. The offline scene remains usable when live narration is unavailable, once the page has loaded.
 
@@ -45,3 +47,5 @@ Build with `docker build -t echosphere .`, then run behind a TLS reverse proxy w
 - **Key setup form hidden:** this is expected online. Only the service owner configures hosted credentials.
 - **Microphone unavailable:** use HTTPS, browser microphone permission, and the correct input device. Text input and the synthetic signal tour remain available.
 - **Hourly limit reached:** use the labelled offline scene or wait for the limit window; the owner can adjust the cap.
+
+The AMD-hosted model must also remain online and your Evolus workspace/credits must stay valid throughout judging. Render hosts the app backend, not the AMD GPU model. Verify the current expiry in the account dashboard; the supplied kickoff transcript gives conflicting expiry dates.
