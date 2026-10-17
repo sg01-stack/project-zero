@@ -1,7 +1,10 @@
+import { OfflineStory, SceneAudio, sceneControls, tourFrame } from './experience.mjs';
+import { AtomExperience } from './visuals.mjs';
 import { AudioEngine } from './audio-engine.mjs';
 import { WORKLET_SOURCE, TurnDispatcher, createLocalJsonHandler, createCompatibilityCapture } from './capture.mjs';
 
 const $ = id => document.getElementById(id);
+const visuals = new AtomExperience({ stars: $('starfield'), atom: $('atomCanvas'), waveform: $('voiceWave') });
 const labels = {
   calibrating: 'Calibrating — stay quiet', calibration_needed: 'Calibration failed — restart in a quiet room',
   candidate: 'Listening to onset…', voiced_speech: 'Voiced speech', whisper_like: 'Whisper-like (tentative)',
@@ -36,13 +39,38 @@ let transportState = 'not_connected';
 let agentReady = false;
 let connectionPending = false;
 let spokenReply = '';
+let narrativeMode = 'waiting';
+let tourActive = false;
+let lastVibration = 0;
+const offlineStory = new OfflineStory();
+const sceneAudio = new SceneAudio();
+const textSession = crypto.randomUUID();
+
+function setNarrativeMode(mode, help) {
+  narrativeMode = mode;
+  $('modeBadge').textContent = { live: 'Live · Evolus agent', offline: 'Offline · scripted scene', waiting: 'Narration needs setup' }[mode];
+  $('modeBadge').dataset.mode = mode;
+  $('modeHelp').textContent = help;
+}
+
+function useOfflineScene() {
+  setNarrativeMode('offline', 'Offline mode uses a scripted local scene, not an LLM. Your microphone and text stay on this device.');
+  void dispatcher.setHandler(async payload => {
+    const reply = offlineStory.reply(payload);
+    showReply(reply, 'Offline scripted scene · no LLM');
+    window.dispatchEvent(new CustomEvent('echosphere:response', { detail: { turn_id: payload.turn_id, reply, source: 'offline_script' } }));
+  });
+  if (!lastPayload) showReply(offlineStory.reply({ transcript: null }), 'Offline scripted scene · no LLM');
+  $('deliveryStatus').textContent = 'Offline scene ready. Speak, whisper, or type a story action.';
+}
+
 
 const dispatcher = new TurnDispatcher(status => {
   transportState = status.state;
   queuedTurns = status.pending;
   const messages = {
-    not_connected: `JSON ready locally; no LLM connected (${status.pending} queued).`,
-    queued: `Queued for the LLM (${status.pending}).`, sending: `Sending ${status.turn_id}…`,
+    not_connected: `Choose live narration or Try offline scene to respond to your audio (${status.pending} queued).`,
+    queued: `Queued for narration (${status.pending}).`, sending: `Sending ${status.turn_id}…`,
     delivered: `Narrative response received. ${status.pending} queued.`,
     failed: `Delivery failed; turn kept for retry: ${status.message}`,
   };
@@ -67,9 +95,18 @@ function onTurn(payload) {
 }
 
 function onFrame(frame) {
+  visuals.react(frame);
+  const controls = sceneControls(frame);
+  sceneAudio.update(controls);
+  $('sceneStatus').textContent = `Scene intensity: ${Math.round(controls.intensity * 100)}% · stereo position: ${controls.pan < 0 ? 'left' : controls.pan > 0 ? 'right' : 'centre'}. ${sceneAudio.context ? 'Ambient audio on.' : 'Sound off.'}`;
+  if ($('hapticsToggle').checked && navigator.vibrate && controls.intensity > 0.35 && performance.now() - lastVibration > 600) {
+    navigator.vibrate(Math.round(15 + controls.intensity * 35)); lastVibration = performance.now();
+  }
   $('inputMeter').value = Math.max(-100, frame.level_dbfs);
   if (lastFrameState !== frame.state) {
     $('turnStateVal').textContent = labels[frame.state];
+    $('heroStatus').textContent = tourActive ? 'Synthetic signal preview · microphone off'
+      : `${labels[frame.state]} · ${narrativeMode === 'live' ? 'Live narration ready' : narrativeMode === 'offline' ? 'Offline scene ready' : 'Choose narration in Story & controls'}`;
     lastFrameState = frame.state;
   }
   $('moodVal').textContent = frame.state === 'pause' ? 'Holding previous style' : labels[frame.state];
@@ -101,7 +138,7 @@ async function refreshMicrophones() {
 }
 
 async function start() {
-  if (running || starting || stopping) return;
+  if (running || starting || stopping || tourActive) return;
   if (queuedTurns >= 100) {
     $('notice').textContent = 'Deliver the queued turns or reload before starting another capture.';
     return;
@@ -112,6 +149,8 @@ async function start() {
   let stage = 'browser support', permissionTimer;
   frameCount = 0; captureMode = null; diagnostic = {};
   $('startBtn').textContent = 'Cancel microphone request';
+  $('initializeLabel').textContent = 'Cancel microphone request';
+  $('heroStatus').textContent = 'Allow microphone access. Stay quiet for the first 1.2 seconds.';
   $('microphoneSelect').disabled = true;
   $('notice').textContent = 'Allow microphone access, then remain quiet for 1.2 seconds.';
   $('micStatus').textContent = 'Waiting for microphone permission…';
@@ -201,6 +240,9 @@ async function start() {
       }
     }, 1000);
     $('startBtn').textContent = 'Stop microphone';
+    visuals.setActive(true);
+    $('initializeLabel').textContent = 'Listening. Click to Pause.';
+    $('heroStatus').textContent = 'Calibrating for 1.2 seconds, then your voice moves the orbits.';
     $('recalibrateBtn').disabled = false;
     $('notice').textContent = 'Stay quiet for calibration. Then speak or whisper naturally. Use headphones when your narrative engine plays audio.';
     $('micStatus').textContent = `Microphone active · ${captureMode === 'Compatibility' ? 'compatibility mode · ' : ''}analysis on this device`;
@@ -221,6 +263,9 @@ async function start() {
     await releaseAudio();
     $('micStatus').textContent = 'Microphone off';
     $('startBtn').textContent = 'Start microphone';
+    visuals.setActive(false);
+    $('initializeLabel').textContent = 'Click to Initialize.';
+    $('heroStatus').textContent = $('notice').textContent;
   } finally {
     clearTimeout(permissionTimer);
     starting = false; startupController = null;
@@ -263,6 +308,9 @@ async function stop() {
   await releaseAudio();
   lastFrameState = null;
   $('startBtn').textContent = 'Start microphone';
+  visuals.setActive(false);
+  $('initializeLabel').textContent = 'Click to Initialize.';
+  $('heroStatus').textContent = 'Microphone paused. Click to begin again.';
   $('startBtn').disabled = false;
   $('turnStateVal').textContent = 'Stopped';
   $('moodVal').textContent = '—';
@@ -278,6 +326,7 @@ async function stop() {
 }
 
 $('startBtn').addEventListener('click', () => starting ? startupController?.abort() : running ? void stop() : void start());
+$('initializeBtn').addEventListener('click', () => starting ? startupController?.abort() : running ? void stop() : void start());
 $('devicesBtn').addEventListener('click', () => void refreshMicrophones());
 $('recalibrateBtn').addEventListener('click', async () => { await stop(); await start(); });
 $('retryBtn').addEventListener('click', () => void dispatcher.retry());
@@ -290,14 +339,15 @@ $('downloadBtn').addEventListener('click', () => {
   anchor.href = url; anchor.download = 'echosphere-payload.json'; anchor.click();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 });
-window.addEventListener('pagehide', () => { stream?.getTracks().forEach(track => track.stop()); });
+window.addEventListener('pagehide', () => { stream?.getTracks().forEach(track => track.stop()); void sceneAudio.disable(); navigator.vibrate?.(0); });
 
-async function connectEvolus() {
+async function connectEvolus({ selectLive = true } = {}) {
   if (connectionPending) return false;
   if (!['http:', 'https:'].includes(location.protocol)) {
     $('launchHelp').hidden = false;
     $('agentStatus').textContent = 'The agent needs the local app. Double-click Start EchoSphere.cmd in the extracted folder.';
     $('connectBtn').disabled = true;
+    if (narrativeMode !== 'offline') setNarrativeMode('waiting', 'Open the full app to connect Evolus, or choose Try offline scene to explore now.');
     return false;
   }
   connectionPending = true;
@@ -309,10 +359,11 @@ async function connectEvolus() {
     const status = await response.json();
     if (status.app !== 'EchoSphere') throw new Error('This page is not connected to the EchoSphere backend. Launch the full app.');
     setupToken = status.setup_token;
-    $('agentSetup').hidden = false;
+    $('agentSetup').hidden = status.setup_allowed === false;
+    $('launchHelp').hidden = true;
     $('agentIdInput').value = status.agent_id;
     if (!status.configured) {
-      $('agentSetup').open = true;
+      $('agentSetup').open = status.setup_allowed !== false;
       throw new Error(status.error || 'Enter your Evolus key below to connect this computer.');
     }
     agentReady = true;
@@ -320,7 +371,9 @@ async function connectEvolus() {
     $('agentStatus').textContent = status.live_connection_verified
       ? 'EchoSphere agent connected — a real response has been received.'
       : 'EchoSphere agent found. Test the connection or start speaking.';
-    $('deliveryStatus').textContent = 'Completed turns will be sent to your EchoSphere agent.';
+    if (narrativeMode === 'offline' && !selectLive) return true;
+    setNarrativeMode('live', 'Live narration is connected through the app backend. Audio stays on this device; turn JSON and typed text go to Evolus.');
+    $('deliveryStatus').textContent = 'Live narration ready. Speak or type your next action.';
     // Attach the handler without blocking setup on previously queued turns.
     void dispatcher.setHandler(async payload => {
       const resultResponse = await fetch('/api/turn', {
@@ -330,7 +383,7 @@ async function connectEvolus() {
       const result = await resultResponse.json();
       if (!resultResponse.ok) throw new Error(result.error || `Backend returned HTTP ${resultResponse.status}`);
       if (result.turn_id !== payload.turn_id || typeof result.reply !== 'string') throw new Error('Unexpected agent response.');
-      showReply(result.reply);
+      showReply(result.reply, 'Live Evolus agent');
       $('agentStatus').textContent = 'EchoSphere agent connected — response received.';
       window.dispatchEvent(new CustomEvent('echosphere:response', { detail: result }));
     });
@@ -338,7 +391,10 @@ async function connectEvolus() {
   } catch (error) {
     agentReady = false;
     $('testAgentBtn').disabled = true;
-    void dispatcher.setHandler(null);
+    if (narrativeMode !== 'offline') {
+      void dispatcher.setHandler(null);
+      setNarrativeMode('waiting', `Live narration unavailable: ${error.message} You can still explore the offline scene.`);
+    }
     $('agentStatus').textContent = `Agent unavailable: ${error.message}`;
     if (!setupToken) $('launchHelp').hidden = false;
     return false;
@@ -348,10 +404,12 @@ async function connectEvolus() {
   }
 }
 
-function showReply(reply) {
+function showReply(reply, sourceLabel = 'Live Evolus agent') {
+  $('replySource').textContent = sourceLabel;
   $('agentReply').textContent = reply;
   spokenReply = reply;
   $('speakBtn').disabled = false;
+  $('heroStory').textContent = 'Your story has a new response. Read it below ↓';
 }
 
 async function testAgent() {
@@ -429,10 +487,61 @@ window.echoSphere = Object.freeze({
   connectLocalEndpoint: options => dispatcher.setHandler(createLocalJsonHandler(options)),
   retryDelivery: () => dispatcher.retry(),
   addTranscript: result => engine?.setTranscript(result) || false,
-  getStatus: () => ({ running, starting, captureMode, frameCount, diagnostic: structuredClone(diagnostic), agentReady, turnId: engine?.turn?.id || null, queuedTurns, transportState }),
+  getStatus: () => ({ visual: visuals.getState(), narrativeMode, tourActive, running, starting, captureMode, frameCount, diagnostic: structuredClone(diagnostic), agentReady, turnId: engine?.turn?.id || null, queuedTurns, transportState }),
 });
 $('startBtn').disabled = false;
+$('initializeBtn').disabled = false;
+$('heroStatus').textContent = 'Microphone stays off until you choose to begin.';
 $('micStatus').textContent = 'Microphone off';
 $('notice').textContent = 'Start in a quiet room and remain silent for 1.2 seconds to calibrate the noise floor.';
-void connectEvolus();
+void connectEvolus({ selectLive: false });
 void refreshMicrophones();
+
+$('offlineBtn').addEventListener('click', useOfflineScene);
+$('textForm').addEventListener('submit', event => {
+  event.preventDefault();
+  const text = $('storyText').value.trim();
+  if (!text) return;
+  if (narrativeMode === 'waiting') {
+    $('modeHelp').textContent = 'Choose Try offline scene or connect live narration first, then send your text.';
+    return;
+  }
+  if (queuedTurns >= 100) { $('modeHelp').textContent = 'Deliver or clear your queued turns before sending more text.'; return; }
+  onTurn({ schema_version: '1.0', event: 'user_text', session_id: engine?.sessionId || textSession,
+    turn_id: `text:${crypto.randomUUID()}`, transcript: { text, source: 'typed', is_final: true },
+    prosody_analysis: null, llm_guidance: 'This is typed user input. No acoustic measurements or inferred emotion accompany it.' });
+  $('storyText').value = '';
+});
+$('ambienceToggle').addEventListener('change', async event => {
+  event.target.disabled = true;
+  try { if (event.target.checked) await sceneAudio.enable(); else await sceneAudio.disable(); }
+  catch { event.target.checked = false; $('sceneStatus').textContent = 'Ambient sound could not start. The text and microphone controls remain available.'; }
+  finally { event.target.disabled = false; }
+});
+if (!navigator.vibrate) {
+  $('hapticsToggle').disabled = true;
+  $('hapticsToggle').parentElement.append(' — unavailable in this browser');
+}
+$('hapticsToggle').addEventListener('change', event => { if (!event.target.checked) navigator.vibrate?.(0); });
+for (const button of document.querySelectorAll('.tourBtn')) button.addEventListener('click', async () => {
+  if (running || starting || tourActive) { $('tourStatus').textContent = 'Stop microphone capture before running a signal tour.'; return; }
+  tourActive = true; $('startBtn').disabled = true; $('initializeBtn').disabled = true;
+  document.querySelectorAll('.tourBtn').forEach(el => { el.disabled = true; });
+  $('tourStatus').textContent = 'Playing synthetic features through the detector. No microphone or LLM request is used.';
+  let result;
+  const detector = new AudioEngine({ onFrame, onTurn: payload => { result = payload; }, onEvent: payload => { result = payload; } });
+  try {
+    for (let i = 0; i < 80; i++) { detector.push(tourFrame(button.dataset.signal, i)); await new Promise(resolve => setTimeout(resolve, 50)); }
+    detector.finish('tour_end');
+    if (result) {
+      logPayload({ ...result, demo_source: 'synthetic_feature_fixture' });
+      $('tourStatus').textContent = `Synthetic tour result: ${result.prosody_analysis?.dominant_style || result.audio_type || result.event}. No LLM request was made.`;
+    } else $('tourStatus').textContent = 'Tour complete. No speech turn was emitted.';
+  } finally {
+    tourActive = false; $('startBtn').disabled = false; $('initializeBtn').disabled = false;
+    visuals.setActive(false); lastFrameState = null;
+    $('heroStatus').textContent = 'Signal preview finished. Click to initialize your microphone.';
+    document.querySelectorAll('.tourBtn').forEach(el => { el.disabled = false; });
+    $('turnStateVal').textContent = 'Stopped';
+  }
+});

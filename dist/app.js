@@ -490,8 +490,229 @@ function createLocalJsonHandler({ url, timeoutMs = 20000 }) {
   };
 }
 
+// Offline narrative is deliberately scripted and labelled, never presented as an LLM.
+class OfflineStory {
+  constructor() { this.turns = 0; }
+  reply(payload) {
+    this.turns++;
+    const words = payload.transcript?.text?.toLowerCase() || '';
+    if (words.includes('left')) return 'You take the left corridor. A low mechanical hum grows clearer, and a blue lamp reveals a door marked OBSERVATORY. You can open the door or listen at the wall.';
+    if (words.includes('right')) return 'The right corridor leads to a rain-dark courtyard. A bell moves without ringing. Beneath it, a narrow stair descends into warm light.';
+    if (words.includes('open') || words.includes('door')) return 'The observatory door opens. A guide waits beside a map of moving stars. “We have been listening,” she says. “Which path will you choose?”';
+    if (words.includes('listen')) return 'You pause to listen. Water taps somewhere to your left; a steady hum answers from the right. Neither sound gives away its source.';
+    if (payload.prosody_analysis?.dominant_style === 'whisper_like') return 'The soundscape draws close: a soft rustle on the left, a distant chime on the right. Your guide lowers her voice. “There are two passages ahead. Take your time.”';
+    if (payload.prosody_analysis?.dominant_style === 'voiced_speech') return 'Your voice carries through the stone hall. The room answers with a deeper resonance, and two passages come into focus. Your guide waits for you to choose left or right.';
+    return this.turns === 1 ? 'You stand at the entrance to an abandoned observatory. Two passages open ahead. Type “left”, “right”, or “listen” to explore the scripted scene, or speak to change its atmosphere.' : 'The observatory holds its breath. Your guide waits beside the two passages. You can go left, go right, or listen.';
+  }
+}
+
+function sceneControls(frame) {
+  const active = ['voiced_speech', 'whisper_like', 'uncertain_audio', 'candidate'].includes(frame.state);
+  const intensity = active ? Math.min(1, Math.max(0, (frame.level_dbfs + 65) / 45)) : 0.12;
+  return { intensity, pan: frame.state === 'whisper_like' ? -0.65 : frame.state === 'voiced_speech' ? 0.65 : 0,
+    filterHz: 250 + intensity * 1500, gain: 0.012 + intensity * 0.025 };
+}
+
+class SceneAudio {
+  constructor() { this.context = null; }
+  async enable() {
+    if (this.context) return;
+    const context = new AudioContext();
+    this.context = context;
+    let timer;
+    try {
+      await Promise.race([context.resume(), new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error('Ambient audio startup timed out.')), 5000);
+      })]);
+      clearTimeout(timer);
+      const tone = context.createOscillator();
+      tone.type = 'sine'; tone.frequency.value = 110;
+      const overtone = context.createOscillator();
+      overtone.type = 'sine'; overtone.frequency.value = 164.81;
+      const filter = context.createBiquadFilter(); filter.type = 'lowpass'; filter.frequency.value = 400;
+      const panner = context.createStereoPanner();
+      const gain = context.createGain(); gain.gain.value = 0.015;
+      tone.connect(filter); overtone.connect(filter); filter.connect(panner); panner.connect(gain); gain.connect(context.destination);
+      tone.start(); overtone.start();
+      this.nodes = { tone, overtone, filter, panner, gain };
+    } catch (error) { await this.disable(); throw error; }
+    finally { clearTimeout(timer); }
+  }
+  update(controls) {
+    if (!this.nodes || !this.context) return;
+    const time = this.context.currentTime;
+    this.nodes.filter.frequency.setTargetAtTime(controls.filterHz, time, 0.15);
+    this.nodes.panner.pan.setTargetAtTime(controls.pan, time, 0.2);
+    this.nodes.gain.gain.setTargetAtTime(controls.gain, time, 0.2);
+  }
+  async disable() {
+    const context = this.context;
+    this.context = null; this.nodes = null;
+    if (context && context.state !== 'closed') await context.close();
+  }
+}
+
+// Repeatable feature fixtures for a labelled, microphone-free signal tour.
+// These are synthetic acoustic features, not recorded speech or accuracy claims.
+function tourFrame(kind, index) {
+  const quiet = { frameMs: 50, dbfs: -80, rms: 0.0001, peakDbfs: -75, crestDb: 5, periodicity: 0,
+    pitchHz: null, clippedFraction: 0, lowRatio: 0.1, speechBandRatio: 0.8, highRatio: 0.4, flatness: 0.4, zeroCrossingsPerSecond: 5000 };
+  if (index < 24 || index >= (kind === 'snap' ? 25 : 60)) return quiet;
+  if (kind === 'snap') return { ...quiet, dbfs: -14, rms: 0.2, peakDbfs: 0, crestDb: 14 };
+  const voiced = kind === 'speech';
+  const dbfs = (voiced ? -27 : -43) + Math.sin(index * 1.1) * 6;
+  return { ...quiet, dbfs, rms: 10 ** (dbfs / 20), peakDbfs: dbfs + 6,
+    periodicity: voiced ? 0.9 : 0.15, pitchHz: voiced ? 160 : null, flatness: 0.3 };
+}
+
+// Dependency-free 3D projection: four orbit planes, depth-sorted electrons and
+// a draggable global rotation. Acoustic frames modulate the animation locally.
+class AtomExperience {
+  constructor({ stars, atom, waveform }) {
+    this.stars = stars; this.atom = atom; this.waveform = waveform;
+    this.rotation = { x: -0.35, y: 0.3 };
+    this.energy = 0; this.target = 0; this.active = false; this.phase = 0;
+    this.reducedMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
+    this.drag = null;
+    this.starPoints = Array.from({ length: 260 }, () => ({ x: Math.random(), y: Math.random(), size: 0.3 + Math.random() * 1.3,
+      brightness: 0.2 + Math.random() * 0.6, phase: Math.random() * Math.PI * 2, twinkle: Math.random() > 0.88 }));
+    this.shells = [
+      { radius: 65, tilt: 0.4, turn: 0.2, count: 2, color: '#f3c7ff' },
+      { radius: 94, tilt: 1.05, turn: 0.65, count: 8, color: '#a1caff' },
+      { radius: 124, tilt: 1.6, turn: -0.4, count: 18, color: '#b7a0ff' },
+      { radius: 155, tilt: 0.85, turn: -1.0, count: 32, color: '#76e6ff' },
+    ];
+    atom.addEventListener('pointerdown', event => {
+      if (event.button !== 0) return;
+      this.drag = { x: event.clientX, y: event.clientY }; atom.setPointerCapture(event.pointerId);
+      atom.classList.add('dragging');
+    });
+    atom.addEventListener('pointermove', event => {
+      if (!this.drag) return;
+      this.rotation.y += (event.clientX - this.drag.x) * 0.008;
+      this.rotation.x += (event.clientY - this.drag.y) * 0.008;
+      this.drag = { x: event.clientX, y: event.clientY };
+    });
+    const endDrag = () => { this.drag = null; atom.classList.remove('dragging'); };
+    atom.addEventListener('pointerup', endDrag); atom.addEventListener('pointercancel', endDrag);
+    atom.addEventListener('lostpointercapture', endDrag);
+    atom.addEventListener('keydown', event => {
+      const keys = { ArrowLeft: [0, -0.12], ArrowRight: [0, 0.12], ArrowUp: [-0.12, 0], ArrowDown: [0.12, 0], Home: null };
+      if (!(event.key in keys)) return;
+      event.preventDefault();
+      if (event.key === 'Home') this.rotation = { x: -0.35, y: 0.3 };
+      else { this.rotation.x += keys[event.key][0]; this.rotation.y += keys[event.key][1]; }
+    });
+    this.last = performance.now();
+    const animate = now => {
+      const elapsed = Math.min((now - this.last) / 1000, 0.06); this.last = now;
+      if (!document.hidden) {
+        this.energy += (this.target - this.energy) * 0.12;
+        if (!this.reducedMotion) this.phase += elapsed * (0.32 + this.energy * 1.5);
+        this.drawStars(now / 1000); this.drawAtom(); this.drawWave(now / 1000);
+      }
+      this.animation = requestAnimationFrame(animate);
+    };
+    this.animation = requestAnimationFrame(animate);
+  }
+  react(frame) {
+    this.target = ['silence', 'pause', 'calibrating', 'calibration_needed'].includes(frame.state) ? 0
+      : Math.max(0, Math.min(1, (frame.level_dbfs + 65) / 45));
+  }
+  setActive(value) { this.active = value; if (!value) this.target = 0; }
+  getState() { return { shells: 4, electrons: 60, rotation: { ...this.rotation }, energy: this.energy, active: this.active }; }
+  surface(canvas) {
+    const { width, height } = canvas.getBoundingClientRect();
+    const ratio = Math.min(devicePixelRatio || 1, 2);
+    const pixelWidth = Math.round(width * ratio), pixelHeight = Math.round(height * ratio);
+    if (canvas.width !== pixelWidth || canvas.height !== pixelHeight) { canvas.width = pixelWidth; canvas.height = pixelHeight; }
+    const context = canvas.getContext('2d');
+    context.setTransform(ratio, 0, 0, ratio, 0, 0); context.clearRect(0, 0, width, height);
+    return { context, width, height };
+  }
+  drawStars(time) {
+    const { context: ctx, width, height } = this.surface(this.stars);
+    for (const star of this.starPoints) {
+      const pulse = star.twinkle && !this.reducedMotion ? 0.6 + Math.sin(time * 0.8 + star.phase) * 0.4 : 1;
+      ctx.fillStyle = `rgba(219,230,255,${star.brightness * pulse})`;
+      ctx.beginPath(); ctx.arc(star.x * width, star.y * height, star.size, 0, Math.PI * 2); ctx.fill();
+      if (star.twinkle && pulse > 0.86) {
+        ctx.strokeStyle = `rgba(200,218,255,${(pulse - 0.86) * 1.5})`; ctx.lineWidth = 0.6;
+        const x = star.x * width, y = star.y * height;
+        ctx.beginPath(); ctx.moveTo(x - 4, y); ctx.lineTo(x + 4, y); ctx.moveTo(x, y - 4); ctx.lineTo(x, y + 4); ctx.stroke();
+      }
+    }
+  }
+  rotate(point, xAngle, yAngle) {
+    const [x, y, z] = point;
+    const y1 = y * Math.cos(xAngle) - z * Math.sin(xAngle), z1 = y * Math.sin(xAngle) + z * Math.cos(xAngle);
+    return [x * Math.cos(yAngle) + z1 * Math.sin(yAngle), y1, -x * Math.sin(yAngle) + z1 * Math.cos(yAngle)];
+  }
+  orbit(shell, angle) {
+    const radius = shell.radius * (1 + this.energy * 0.13);
+    return this.rotate(this.rotate([Math.cos(angle) * radius, Math.sin(angle) * radius, 0], shell.tilt, shell.turn), this.rotation.x, this.rotation.y);
+  }
+  drawAtom() {
+    const { context: ctx, width, height } = this.surface(this.atom);
+    const size = Math.min(width, height) / 390;
+    const project = ([x, y, z]) => { const depth = 600 / (600 - z); return { x: width / 2 + x * size * depth, y: height / 2 + y * size * depth, z, scale: size * depth }; };
+    const items = [];
+    this.shells.forEach((shell, index) => {
+      for (let step = 0; step < 144; step++) {
+        const a = project(this.orbit(shell, step / 144 * Math.PI * 2));
+        const b = project(this.orbit(shell, (step + 1) / 144 * Math.PI * 2));
+        items.push({ type: 'line', a, b, z: (a.z + b.z) / 2, color: shell.color });
+      }
+      for (let electron = 0; electron < shell.count; electron++) {
+        const angle = electron / shell.count * Math.PI * 2 + this.phase * (index % 2 ? -1 : 1) * (1.4 - index * 0.18);
+        const point = project(this.orbit(shell, angle));
+        items.push({ type: 'electron', ...point, color: shell.color, radius: 2.1 + (3 - index) * 0.25 });
+      }
+    });
+    // Small spatial cluster at the nucleus, rather than a flat centre icon.
+    for (let i = 0; i < 18; i++) {
+      const theta = i * 2.39996, vertical = 1 - 2 * (i + 0.5) / 18;
+      const r = Math.sqrt(1 - vertical * vertical) * 15;
+      const point = project(this.rotate([Math.cos(theta) * r, Math.sin(theta) * r, vertical * 15], this.rotation.x, this.rotation.y));
+      items.push({ type: 'nucleus', ...point, color: i % 2 ? '#c7a7ff' : '#f2bce9', radius: 6 });
+    }
+    const glow = ctx.createRadialGradient(width / 2, height / 2, 0, width / 2, height / 2, 100 * size);
+    glow.addColorStop(0, `rgba(127,106,255,${0.17 + this.energy * 0.15})`); glow.addColorStop(1, 'rgba(127,106,255,0)');
+    ctx.fillStyle = glow; ctx.fillRect(0, 0, width, height);
+    items.sort((a, b) => a.z - b.z);
+    for (const item of items) {
+      if (item.type === 'line') {
+        ctx.globalAlpha = item.z < 0 ? 0.2 : 0.52; ctx.strokeStyle = item.color;
+        ctx.lineWidth = size * (0.8 + this.energy * 0.8);
+        ctx.beginPath(); ctx.moveTo(item.a.x, item.a.y); ctx.lineTo(item.b.x, item.b.y); ctx.stroke();
+      } else {
+        ctx.globalAlpha = item.z < 0 ? 0.7 : 1;
+        ctx.fillStyle = item.color; ctx.shadowColor = item.color; ctx.shadowBlur = (item.type === 'electron' ? 10 : 13) * size;
+        ctx.beginPath(); ctx.arc(item.x, item.y, item.radius * item.scale * (1 + this.energy * 0.25), 0, Math.PI * 2); ctx.fill();
+        ctx.shadowBlur = 0;
+      }
+    }
+    ctx.globalAlpha = 1;
+  }
+  drawWave(time) {
+    const { context: ctx, width, height } = this.surface(this.waveform);
+    ctx.strokeStyle = '#e4ddff'; ctx.lineWidth = 1.5; ctx.shadowColor = '#b2a0ff'; ctx.shadowBlur = 8;
+    ctx.beginPath();
+    for (let x = 0; x <= width; x += 2) {
+      const envelope = Math.sin(x / width * Math.PI) ** 1.8;
+      const movement = this.reducedMotion ? 0 : time * (2 + this.energy * 3);
+      const wave = Math.sin(x * 0.095 - movement) * Math.sin(x * 0.032 + movement * 0.4);
+      const y = height / 2 + wave * envelope * (5 + this.energy * 17);
+      if (x === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    }
+    ctx.stroke(); ctx.shadowBlur = 0;
+  }
+  destroy() { cancelAnimationFrame(this.animation); }
+}
+
 
 const $ = id => document.getElementById(id);
+const visuals = new AtomExperience({ stars: $('starfield'), atom: $('atomCanvas'), waveform: $('voiceWave') });
 const labels = {
   calibrating: 'Calibrating — stay quiet', calibration_needed: 'Calibration failed — restart in a quiet room',
   candidate: 'Listening to onset…', voiced_speech: 'Voiced speech', whisper_like: 'Whisper-like (tentative)',
@@ -526,13 +747,38 @@ let transportState = 'not_connected';
 let agentReady = false;
 let connectionPending = false;
 let spokenReply = '';
+let narrativeMode = 'waiting';
+let tourActive = false;
+let lastVibration = 0;
+const offlineStory = new OfflineStory();
+const sceneAudio = new SceneAudio();
+const textSession = crypto.randomUUID();
+
+function setNarrativeMode(mode, help) {
+  narrativeMode = mode;
+  $('modeBadge').textContent = { live: 'Live · Evolus agent', offline: 'Offline · scripted scene', waiting: 'Narration needs setup' }[mode];
+  $('modeBadge').dataset.mode = mode;
+  $('modeHelp').textContent = help;
+}
+
+function useOfflineScene() {
+  setNarrativeMode('offline', 'Offline mode uses a scripted local scene, not an LLM. Your microphone and text stay on this device.');
+  void dispatcher.setHandler(async payload => {
+    const reply = offlineStory.reply(payload);
+    showReply(reply, 'Offline scripted scene · no LLM');
+    window.dispatchEvent(new CustomEvent('echosphere:response', { detail: { turn_id: payload.turn_id, reply, source: 'offline_script' } }));
+  });
+  if (!lastPayload) showReply(offlineStory.reply({ transcript: null }), 'Offline scripted scene · no LLM');
+  $('deliveryStatus').textContent = 'Offline scene ready. Speak, whisper, or type a story action.';
+}
+
 
 const dispatcher = new TurnDispatcher(status => {
   transportState = status.state;
   queuedTurns = status.pending;
   const messages = {
-    not_connected: `JSON ready locally; no LLM connected (${status.pending} queued).`,
-    queued: `Queued for the LLM (${status.pending}).`, sending: `Sending ${status.turn_id}…`,
+    not_connected: `Choose live narration or Try offline scene to respond to your audio (${status.pending} queued).`,
+    queued: `Queued for narration (${status.pending}).`, sending: `Sending ${status.turn_id}…`,
     delivered: `Narrative response received. ${status.pending} queued.`,
     failed: `Delivery failed; turn kept for retry: ${status.message}`,
   };
@@ -557,9 +803,18 @@ function onTurn(payload) {
 }
 
 function onFrame(frame) {
+  visuals.react(frame);
+  const controls = sceneControls(frame);
+  sceneAudio.update(controls);
+  $('sceneStatus').textContent = `Scene intensity: ${Math.round(controls.intensity * 100)}% · stereo position: ${controls.pan < 0 ? 'left' : controls.pan > 0 ? 'right' : 'centre'}. ${sceneAudio.context ? 'Ambient audio on.' : 'Sound off.'}`;
+  if ($('hapticsToggle').checked && navigator.vibrate && controls.intensity > 0.35 && performance.now() - lastVibration > 600) {
+    navigator.vibrate(Math.round(15 + controls.intensity * 35)); lastVibration = performance.now();
+  }
   $('inputMeter').value = Math.max(-100, frame.level_dbfs);
   if (lastFrameState !== frame.state) {
     $('turnStateVal').textContent = labels[frame.state];
+    $('heroStatus').textContent = tourActive ? 'Synthetic signal preview · microphone off'
+      : `${labels[frame.state]} · ${narrativeMode === 'live' ? 'Live narration ready' : narrativeMode === 'offline' ? 'Offline scene ready' : 'Choose narration in Story & controls'}`;
     lastFrameState = frame.state;
   }
   $('moodVal').textContent = frame.state === 'pause' ? 'Holding previous style' : labels[frame.state];
@@ -591,7 +846,7 @@ async function refreshMicrophones() {
 }
 
 async function start() {
-  if (running || starting || stopping) return;
+  if (running || starting || stopping || tourActive) return;
   if (queuedTurns >= 100) {
     $('notice').textContent = 'Deliver the queued turns or reload before starting another capture.';
     return;
@@ -602,6 +857,8 @@ async function start() {
   let stage = 'browser support', permissionTimer;
   frameCount = 0; captureMode = null; diagnostic = {};
   $('startBtn').textContent = 'Cancel microphone request';
+  $('initializeLabel').textContent = 'Cancel microphone request';
+  $('heroStatus').textContent = 'Allow microphone access. Stay quiet for the first 1.2 seconds.';
   $('microphoneSelect').disabled = true;
   $('notice').textContent = 'Allow microphone access, then remain quiet for 1.2 seconds.';
   $('micStatus').textContent = 'Waiting for microphone permission…';
@@ -691,6 +948,9 @@ async function start() {
       }
     }, 1000);
     $('startBtn').textContent = 'Stop microphone';
+    visuals.setActive(true);
+    $('initializeLabel').textContent = 'Listening. Click to Pause.';
+    $('heroStatus').textContent = 'Calibrating for 1.2 seconds, then your voice moves the orbits.';
     $('recalibrateBtn').disabled = false;
     $('notice').textContent = 'Stay quiet for calibration. Then speak or whisper naturally. Use headphones when your narrative engine plays audio.';
     $('micStatus').textContent = `Microphone active · ${captureMode === 'Compatibility' ? 'compatibility mode · ' : ''}analysis on this device`;
@@ -711,6 +971,9 @@ async function start() {
     await releaseAudio();
     $('micStatus').textContent = 'Microphone off';
     $('startBtn').textContent = 'Start microphone';
+    visuals.setActive(false);
+    $('initializeLabel').textContent = 'Click to Initialize.';
+    $('heroStatus').textContent = $('notice').textContent;
   } finally {
     clearTimeout(permissionTimer);
     starting = false; startupController = null;
@@ -753,6 +1016,9 @@ async function stop() {
   await releaseAudio();
   lastFrameState = null;
   $('startBtn').textContent = 'Start microphone';
+  visuals.setActive(false);
+  $('initializeLabel').textContent = 'Click to Initialize.';
+  $('heroStatus').textContent = 'Microphone paused. Click to begin again.';
   $('startBtn').disabled = false;
   $('turnStateVal').textContent = 'Stopped';
   $('moodVal').textContent = '—';
@@ -768,6 +1034,7 @@ async function stop() {
 }
 
 $('startBtn').addEventListener('click', () => starting ? startupController?.abort() : running ? void stop() : void start());
+$('initializeBtn').addEventListener('click', () => starting ? startupController?.abort() : running ? void stop() : void start());
 $('devicesBtn').addEventListener('click', () => void refreshMicrophones());
 $('recalibrateBtn').addEventListener('click', async () => { await stop(); await start(); });
 $('retryBtn').addEventListener('click', () => void dispatcher.retry());
@@ -780,14 +1047,15 @@ $('downloadBtn').addEventListener('click', () => {
   anchor.href = url; anchor.download = 'echosphere-payload.json'; anchor.click();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 });
-window.addEventListener('pagehide', () => { stream?.getTracks().forEach(track => track.stop()); });
+window.addEventListener('pagehide', () => { stream?.getTracks().forEach(track => track.stop()); void sceneAudio.disable(); navigator.vibrate?.(0); });
 
-async function connectEvolus() {
+async function connectEvolus({ selectLive = true } = {}) {
   if (connectionPending) return false;
   if (!['http:', 'https:'].includes(location.protocol)) {
     $('launchHelp').hidden = false;
     $('agentStatus').textContent = 'The agent needs the local app. Double-click Start EchoSphere.cmd in the extracted folder.';
     $('connectBtn').disabled = true;
+    if (narrativeMode !== 'offline') setNarrativeMode('waiting', 'Open the full app to connect Evolus, or choose Try offline scene to explore now.');
     return false;
   }
   connectionPending = true;
@@ -799,10 +1067,11 @@ async function connectEvolus() {
     const status = await response.json();
     if (status.app !== 'EchoSphere') throw new Error('This page is not connected to the EchoSphere backend. Launch the full app.');
     setupToken = status.setup_token;
-    $('agentSetup').hidden = false;
+    $('agentSetup').hidden = status.setup_allowed === false;
+    $('launchHelp').hidden = true;
     $('agentIdInput').value = status.agent_id;
     if (!status.configured) {
-      $('agentSetup').open = true;
+      $('agentSetup').open = status.setup_allowed !== false;
       throw new Error(status.error || 'Enter your Evolus key below to connect this computer.');
     }
     agentReady = true;
@@ -810,7 +1079,9 @@ async function connectEvolus() {
     $('agentStatus').textContent = status.live_connection_verified
       ? 'EchoSphere agent connected — a real response has been received.'
       : 'EchoSphere agent found. Test the connection or start speaking.';
-    $('deliveryStatus').textContent = 'Completed turns will be sent to your EchoSphere agent.';
+    if (narrativeMode === 'offline' && !selectLive) return true;
+    setNarrativeMode('live', 'Live narration is connected through the app backend. Audio stays on this device; turn JSON and typed text go to Evolus.');
+    $('deliveryStatus').textContent = 'Live narration ready. Speak or type your next action.';
     // Attach the handler without blocking setup on previously queued turns.
     void dispatcher.setHandler(async payload => {
       const resultResponse = await fetch('/api/turn', {
@@ -820,7 +1091,7 @@ async function connectEvolus() {
       const result = await resultResponse.json();
       if (!resultResponse.ok) throw new Error(result.error || `Backend returned HTTP ${resultResponse.status}`);
       if (result.turn_id !== payload.turn_id || typeof result.reply !== 'string') throw new Error('Unexpected agent response.');
-      showReply(result.reply);
+      showReply(result.reply, 'Live Evolus agent');
       $('agentStatus').textContent = 'EchoSphere agent connected — response received.';
       window.dispatchEvent(new CustomEvent('echosphere:response', { detail: result }));
     });
@@ -828,7 +1099,10 @@ async function connectEvolus() {
   } catch (error) {
     agentReady = false;
     $('testAgentBtn').disabled = true;
-    void dispatcher.setHandler(null);
+    if (narrativeMode !== 'offline') {
+      void dispatcher.setHandler(null);
+      setNarrativeMode('waiting', `Live narration unavailable: ${error.message} You can still explore the offline scene.`);
+    }
     $('agentStatus').textContent = `Agent unavailable: ${error.message}`;
     if (!setupToken) $('launchHelp').hidden = false;
     return false;
@@ -838,10 +1112,12 @@ async function connectEvolus() {
   }
 }
 
-function showReply(reply) {
+function showReply(reply, sourceLabel = 'Live Evolus agent') {
+  $('replySource').textContent = sourceLabel;
   $('agentReply').textContent = reply;
   spokenReply = reply;
   $('speakBtn').disabled = false;
+  $('heroStory').textContent = 'Your story has a new response. Read it below ↓';
 }
 
 async function testAgent() {
@@ -919,12 +1195,63 @@ window.echoSphere = Object.freeze({
   connectLocalEndpoint: options => dispatcher.setHandler(createLocalJsonHandler(options)),
   retryDelivery: () => dispatcher.retry(),
   addTranscript: result => engine?.setTranscript(result) || false,
-  getStatus: () => ({ running, starting, captureMode, frameCount, diagnostic: structuredClone(diagnostic), agentReady, turnId: engine?.turn?.id || null, queuedTurns, transportState }),
+  getStatus: () => ({ visual: visuals.getState(), narrativeMode, tourActive, running, starting, captureMode, frameCount, diagnostic: structuredClone(diagnostic), agentReady, turnId: engine?.turn?.id || null, queuedTurns, transportState }),
 });
 $('startBtn').disabled = false;
+$('initializeBtn').disabled = false;
+$('heroStatus').textContent = 'Microphone stays off until you choose to begin.';
 $('micStatus').textContent = 'Microphone off';
 $('notice').textContent = 'Start in a quiet room and remain silent for 1.2 seconds to calibrate the noise floor.';
-void connectEvolus();
+void connectEvolus({ selectLive: false });
 void refreshMicrophones();
+
+$('offlineBtn').addEventListener('click', useOfflineScene);
+$('textForm').addEventListener('submit', event => {
+  event.preventDefault();
+  const text = $('storyText').value.trim();
+  if (!text) return;
+  if (narrativeMode === 'waiting') {
+    $('modeHelp').textContent = 'Choose Try offline scene or connect live narration first, then send your text.';
+    return;
+  }
+  if (queuedTurns >= 100) { $('modeHelp').textContent = 'Deliver or clear your queued turns before sending more text.'; return; }
+  onTurn({ schema_version: '1.0', event: 'user_text', session_id: engine?.sessionId || textSession,
+    turn_id: `text:${crypto.randomUUID()}`, transcript: { text, source: 'typed', is_final: true },
+    prosody_analysis: null, llm_guidance: 'This is typed user input. No acoustic measurements or inferred emotion accompany it.' });
+  $('storyText').value = '';
+});
+$('ambienceToggle').addEventListener('change', async event => {
+  event.target.disabled = true;
+  try { if (event.target.checked) await sceneAudio.enable(); else await sceneAudio.disable(); }
+  catch { event.target.checked = false; $('sceneStatus').textContent = 'Ambient sound could not start. The text and microphone controls remain available.'; }
+  finally { event.target.disabled = false; }
+});
+if (!navigator.vibrate) {
+  $('hapticsToggle').disabled = true;
+  $('hapticsToggle').parentElement.append(' — unavailable in this browser');
+}
+$('hapticsToggle').addEventListener('change', event => { if (!event.target.checked) navigator.vibrate?.(0); });
+for (const button of document.querySelectorAll('.tourBtn')) button.addEventListener('click', async () => {
+  if (running || starting || tourActive) { $('tourStatus').textContent = 'Stop microphone capture before running a signal tour.'; return; }
+  tourActive = true; $('startBtn').disabled = true; $('initializeBtn').disabled = true;
+  document.querySelectorAll('.tourBtn').forEach(el => { el.disabled = true; });
+  $('tourStatus').textContent = 'Playing synthetic features through the detector. No microphone or LLM request is used.';
+  let result;
+  const detector = new AudioEngine({ onFrame, onTurn: payload => { result = payload; }, onEvent: payload => { result = payload; } });
+  try {
+    for (let i = 0; i < 80; i++) { detector.push(tourFrame(button.dataset.signal, i)); await new Promise(resolve => setTimeout(resolve, 50)); }
+    detector.finish('tour_end');
+    if (result) {
+      logPayload({ ...result, demo_source: 'synthetic_feature_fixture' });
+      $('tourStatus').textContent = `Synthetic tour result: ${result.prosody_analysis?.dominant_style || result.audio_type || result.event}. No LLM request was made.`;
+    } else $('tourStatus').textContent = 'Tour complete. No speech turn was emitted.';
+  } finally {
+    tourActive = false; $('startBtn').disabled = false; $('initializeBtn').disabled = false;
+    visuals.setActive(false); lastFrameState = null;
+    $('heroStatus').textContent = 'Signal preview finished. Click to initialize your microphone.';
+    document.querySelectorAll('.tourBtn').forEach(el => { el.disabled = false; });
+    $('turnStateVal').textContent = 'Stopped';
+  }
+});
 
 })();

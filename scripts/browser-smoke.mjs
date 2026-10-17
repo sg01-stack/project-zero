@@ -57,7 +57,9 @@ try {
       window.testTurns = []; window.testDelivered = [];
       window.addEventListener('echosphere:turn', e => window.testTurns.push(e.detail));
     });
-    await page.getByRole('button', { name: 'Start microphone', exact: true }).click();
+    await page.getByRole('button', { name: 'Click to Initialize.', exact: true }).click();
+    await page.waitForFunction(() => window.echoSphere.getStatus().visual.active && window.echoSphere.getStatus().visual.energy > 0.3);
+    assert.equal(await page.locator('#initializeLabel').textContent(), 'Listening. Click to Pause.');
     await page.waitForFunction(() => window.testTurns.length > 0, {}, { timeout: 15000 });
     assert.equal(await page.evaluate(() => window.echoSphere.getStatus().transportState), 'not_connected');
     const payload = await page.evaluate(() => window.testTurns[0]);
@@ -69,6 +71,8 @@ try {
     const status = await page.evaluate(() => window.echoSphere.getStatus());
     assert.equal(status.captureMode, compatibility ? 'Compatibility' : 'AudioWorklet');
     assert.ok(status.frameCount > 24);
+    assert.equal(status.visual.active, false);
+    assert.equal(await page.locator('#initializeLabel').textContent(), 'Click to Initialize.');
     assert.equal(status.queuedTurns, 0); assert.equal(status.transportState, 'delivered');
     assert.equal(await page.evaluate(() => window.testTurns.length), 1);
     assert.deepEqual(await page.evaluate(() => window.testDelivered), [payload.turn_id]);
@@ -120,7 +124,7 @@ try {
     navigator.mediaDevices.getUserMedia = () => new Promise(resolve => { window.grantLater = resolve; });
   });
   await deniedPage.getByRole('button', { name: 'Start microphone', exact: true }).click();
-  await deniedPage.getByRole('button', { name: 'Cancel microphone request', exact: true }).click();
+  await deniedPage.locator('#initializeBtn').click();
   await deniedPage.waitForFunction(() => !window.echoSphere.getStatus().starting);
   await deniedPage.evaluate(() => window.grantLater({ getTracks: () => [{ stop: () => { window.lateTrackStopped = true; } }] }));
   await deniedPage.waitForFunction(() => window.lateTrackStopped === true);

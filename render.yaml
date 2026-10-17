@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: echosphere
+    runtime: node
+    plan: free
+    buildCommand: npm run build
+    startCommand: npm run start:headless
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_VERSION
+        value: 24.19.0
+      - key: ECHOSPHERE_HOSTED
+        value: "true"
+      - key: EVOLUS_API_KEY
+        sync: false
+      - key: EVOLUS_AGENT_ID
+        value: 405d18ba-6acf-43cd-9d76-7eddb9710603
+      - key: MAX_AGENT_CALLS_PER_HOUR
+        value: "60"

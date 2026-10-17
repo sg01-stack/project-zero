@@ -1,0 +1,9 @@
+.git
+.env
+.env.*
+.echosphere.local.json*
+node_modules
+tests
+docs
+*.zip
+*.png

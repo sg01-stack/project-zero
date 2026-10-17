@@ -3,44 +3,44 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>EchoSphere · Local audio pipeline</title>
+  <title>EchoSphere · Shape a story with your voice</title>
   <link rel="stylesheet" href="./style.css">
 </head>
 <body>
-  <main>
-    <div class="eyebrow">Continuous audio · local processing</div>
-    <h1>EchoSphere</h1>
-    <p>A stable acoustic signal for your narrative engine. Measures vocal delivery without pretending to read emotion.</p>
+  <canvas id="starfield" aria-hidden="true"></canvas>
+  <section class="cosmic-hero" aria-labelledby="welcomeTitle">
+    <header class="cosmic-header">
+      <a class="wordmark" href="#welcomeTitle" aria-label="EchoSphere home"><span class="brand-spark" aria-hidden="true">✧</span> ECHOSPHERE</a>
+      <a class="workspace-link" href="#workspace">Story &amp; controls <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path d="M3 13 13 3M3 3h10v10" fill="none" stroke="currentColor" stroke-width="1.3"/></svg></a>
+    </header>
+    <div class="hero-stage">
+      <div class="atom-stage">
+        <canvas id="atomCanvas" tabindex="0" role="img" aria-label="Interactive three-dimensional atom with four shells and sixty electrons. Drag to rotate, or use the arrow keys. Home resets the view."></canvas>
+        <p class="orbit-hint">DRAG TO EXPLORE <span aria-hidden="true">·</span> ARROW KEYS TO ROTATE</p>
+      </div>
+      <h1 id="welcomeTitle">Welcome To Echosphere.</h1>
+      <a id="heroStory" class="hero-story" href="#workspace">Your voice shapes the atmosphere. Explore your story <span aria-hidden="true">↓</span></a>
+    </div>
+    <div class="initialize-zone">
+      <button id="initializeBtn" class="initialize-button" disabled aria-describedby="heroStatus">
+        <canvas id="voiceWave" aria-hidden="true"></canvas>
+        <span id="initializeLabel">Click to Initialize.</span>
+      </button>
+      <p id="heroStatus" role="status">Loading your universe…</p>
+    </div>
+  </section>
+  <main id="workspace">
+    <div class="eyebrow">A voice-controlled narrative experiment</div>
+    <h2 class="workspace-title">The observatory</h2>
+    <p class="intro">Speak softly. Change the atmosphere. Explore a story shaped by how you sound.</p>
+    <p>Audio analysis runs on your device. Live narration uses Evolus; the offline scene works without an account.</p>
+    <div class="mode-bar"><span id="modeBadge" role="status">Checking live narration…</span><button id="offlineBtn" class="secondary">Try offline scene</button></div>
+    <p id="modeHelp">Choose live narration or explore the clearly labelled scripted demo. Use headphones for the soundscape.</p>
     <section id="launchHelp" class="agent-panel" hidden>
       <h2>Open the full app</h2>
       <p>On Windows, close this tab and double-click <strong>Start EchoSphere.cmd</strong> in the extracted folder. It starts EchoSphere and opens the correct browser page. Keep its terminal window open.</p>
       <p>Install Node.js 22 or newer from nodejs.org if the launcher requests it. On macOS or Linux, run <code>npm start</code> in the project folder. This file can test your microphone, but the agent needs the full app.</p>
     </section>
-    <div class="dashboard">
-      <div class="metric"><label>TURN STATE</label><div id="turnStateVal" class="value" role="status">Stopped</div></div>
-      <div class="metric"><label>ACOUSTIC STYLE</label><div id="moodVal" class="value">—</div></div>
-    </div>
-    <div class="measurements">
-      <span>Level: <strong id="levelVal">—</strong></span>
-      <span>Noise floor: <strong id="noiseVal">—</strong></span>
-      <span>Pitch: <strong id="pitchVal">—</strong></span>
-    </div>
-    <label for="microphoneSelect">Microphone</label>
-    <select id="microphoneSelect"><option value="">System default microphone</option></select>
-    <div class="actions"><button id="devicesBtn" class="secondary">Refresh microphones</button><button id="recalibrateBtn" class="secondary" disabled>Recalibrate</button></div>
-    <meter id="inputMeter" min="-100" max="0" value="-100" aria-label="Microphone input level"></meter>
-    <button id="startBtn" disabled>Start microphone</button>
-    <div id="micStatus">Loading microphone controls…</div>
-    <p id="notice" role="status">Loading EchoSphere… If this message remains, extract the complete ZIP before opening index.html, or open dist/echosphere.html.</p>
-    <noscript><p>Enable JavaScript in your browser to use the microphone.</p></noscript>
-    <details><summary>Microphone diagnostics</summary><pre id="micDiagnostics">No capture attempted yet.</pre></details>
-    <h2>Latest event</h2>
-    <pre id="jsonLog" aria-label="Latest JSON payload">{"status": "awaiting_session"}</pre>
-    <p id="deliveryStatus" role="status">No LLM connected. Audio events and completed turns are available locally.</p>
-    <div class="actions">
-      <button id="downloadBtn" class="secondary" disabled>Download latest JSON</button>
-      <button id="retryBtn" class="secondary" disabled>Retry delivery</button>
-    </div>
     <section class="agent-panel" aria-label="Narrative agent">
       <h2>Your narrative agent</h2>
       <p id="agentStatus" role="status">Checking the EchoSphere agent…</p>
@@ -63,9 +63,55 @@
       <p>Vocal delivery is sent as JSON after each turn. Words require a separate local speech recognizer; without one, the agent receives acoustic context only.</p>
     </section>
     <h2>Narrative response</h2>
-    <p id="agentReply" role="status">Speak or whisper, then pause to let the story respond.</p>
+    <p id="replySource" class="eyebrow">Awaiting a story</p>
+    <p id="agentReply" role="status">Begin at the doors of an abandoned observatory. Connect live narration or choose the offline scene, then speak or type your next action.</p>
     <button id="speakBtn" class="secondary" disabled>Play response · pauses microphone</button>
     <p id="playbackStatus" role="status"></p>
+    <div class="dashboard">
+      <div class="metric"><label>TURN STATE</label><div id="turnStateVal" class="value" role="status">Stopped</div></div>
+      <div class="metric"><label>ACOUSTIC STYLE</label><div id="moodVal" class="value">—</div></div>
+    </div>
+    <div class="measurements">
+      <span>Level: <strong id="levelVal">—</strong></span>
+      <span>Noise floor: <strong id="noiseVal">—</strong></span>
+      <span>Pitch: <strong id="pitchVal">—</strong></span>
+    </div>
+    <label for="microphoneSelect">Microphone</label>
+    <select id="microphoneSelect"><option value="">System default microphone</option></select>
+    <div class="actions"><button id="devicesBtn" class="secondary">Refresh microphones</button><button id="recalibrateBtn" class="secondary" disabled>Recalibrate</button></div>
+    <meter id="inputMeter" min="-100" max="0" value="-100" aria-label="Microphone input level"></meter>
+    <button id="startBtn" disabled>Start microphone</button>
+    <div id="micStatus">Loading microphone controls…</div>
+    <p id="notice" role="status">Loading EchoSphere… If this message remains, extract the complete ZIP before opening index.html, or open dist/echosphere.html.</p>
+    <noscript><p>Enable JavaScript in your browser to use the microphone.</p></noscript>
+    <details><summary>Microphone diagnostics</summary><pre id="micDiagnostics">No capture attempted yet.</pre></details>
+    <details class="payload-panel"><summary>Inspect the JSON payload</summary>
+    <pre id="jsonLog" aria-label="Latest JSON payload">{"status": "awaiting_session"}</pre>
+    </details>
+    <p id="deliveryStatus" role="status">Choose live narration or the offline scene to receive a response.</p>
+    <div class="actions">
+      <button id="downloadBtn" class="secondary" disabled>Download latest JSON</button>
+      <button id="retryBtn" class="secondary" disabled>Retry delivery</button>
+    </div>
+
+    <section class="agent-panel" aria-label="Story controls">
+      <h2>Shape the scene</h2>
+      <label><input id="ambienceToggle" type="checkbox"> Ambient stereo sound (use headphones)</label>
+      <label><input id="hapticsToggle" type="checkbox"> Vibration preview, where supported</label>
+      <p id="sceneStatus" role="status">Sound is off. Scene intensity follows vocal delivery; it is not an emotion estimate.</p>
+      <form id="textForm">
+        <label for="storyText">Your words or next action</label>
+        <textarea id="storyText" rows="2" maxlength="2000" placeholder="For example: I take the left passage and listen." required></textarea>
+        <button type="submit" class="secondary">Send story text</button>
+      </form>
+      <p>Text is an accessible alternative to speaking. Microphone capture measures delivery; it does not transcribe words.</p>
+    </section>
+    <section class="agent-panel" aria-label="Signal tour">
+      <h2>Try the signal tour</h2>
+      <p>Three synthetic signals demonstrate the detector without a microphone. They do not call the LLM or measure real-world accuracy.</p>
+      <div class="actions"><button class="secondary tourBtn" data-signal="speech">Speech signal</button><button class="secondary tourBtn" data-signal="whisper">Whisper-like signal</button><button class="secondary tourBtn" data-signal="snap">Snap signal</button></div>
+      <p id="tourStatus" role="status"></p>
+    </section>
     <details>
       <summary>How to interpret the detector</summary>
       <p>A short, isolated attack followed by a rapid decay is a transient candidate. Whisper-like sound must persist and vary over time. Brief consonants and pauses do not immediately change a speech turn's style.</p>
@@ -74,6 +120,6 @@
       <p>Audio analysis stays on this device. When Evolus is configured on the local backend, completed turn JSON is sent to its remote agent; microphone PCM is not sent. No browser speech recognition is enabled. See the README for configuration and integration.</p>
     </details>
   </main>
-  <script defer src="./dist/app.js" onerror="document.getElementById('micStatus').textContent = 'Application could not load'; document.getElementById('notice').textContent = 'EchoSphere could not load its app files. Extract the complete ZIP, then open index.html again, or open the self-contained dist/echosphere.html.';"></script>
+  <script defer src="./dist/app.js" onerror="document.getElementById('heroStatus').textContent = 'App files missing. Extract the complete ZIP, then open Start EchoSphere.cmd.'; document.getElementById('micStatus').textContent = 'Application could not load'; document.getElementById('notice').textContent = 'EchoSphere could not load its app files. Extract the complete ZIP, then open index.html again, or open the self-contained dist/echosphere.html.';"></script>
 </body>
 </html>
