@@ -30,7 +30,7 @@ Automatic story placement maps narrated spatial cues to bounded presets, while r
 
 ## Acceptance checks still required
 
-The cloud egress proxy currently returns HTTP 403 for Hugging Face. A draft adds the model hosts while retaining the Evolus destinations; saving that draft does not apply it. Successful real Whisper/Kokoro inference has not been verified here. No public Render URL is deployed yet.
+The cloud network settings were published and confirmed on 2026-10-18, including the model hosts and existing Evolus destinations. The active cloud egress proxy still returns HTTP 403 for Hugging Face; the retried `test:models` fails to fetch. Successful real Whisper/Kokoro inference has not been verified here. No public Render URL is deployed yet. Re-entering the key or saving the same settings again is unnecessary.
 
 Once model downloads are allowed, run `npm run test:models` to exercise the real workers (no Evolus credits are used). Then verify a real live agent conversation on the deployed HTTPS URL with headphones, including whispered sentences, interruption, recognition mistakes, and your target device's latency. Record the actual results before submitting the live-demo claim.
 

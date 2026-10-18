@@ -4,6 +4,10 @@ For click-by-click instructions, start with [START-HERE.md](START-HERE.md).
 
 Use **Render** for one HTTPS link that serves both the page and the backend. Judges need a browser; they do not install Node.js or Evolus Studio, and they do not enter an API key.
 
+The [pre-publication credential review](SECURITY-REVIEW.md) found no real keys in the current files or reviewed Git history. Use a replacement for any previously shared key, and keep it only in the hosting service's private environment settings. Public requests can consume the owner's model allowance; the usage limits below reduce exposure but do not guarantee a bill cap.
+
+Render hosts the app, while the configured AMD deployment performs narrative inference. This is consistent with the supplied kickoff's meaningful-AMD-workload requirement; [submission notes](SUBMISSION.md) explain the track and evidence needed. Organizers determine final eligibility.
+
 ## Owner setup — once
 
 1. Open [Deploy EchoSphere on Render](https://render.com/deploy?repo=https://github.com/sg01-stack/project-zero).

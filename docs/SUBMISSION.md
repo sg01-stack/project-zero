@@ -15,6 +15,8 @@
 
 The separate **Evolus Business Agents** challenge additionally requires a real business process and at least two Evolus platform building blocks. EchoSphere currently uses **one agent**; [see the explanation](EVOLUS-BUILDING-BLOCKS.md). Do not claim that the browser models, AMD endpoint, or this web page are a second Evolus building block.
 
+**Why Render is used:** the supplied kickoff requires a meaningful workload on AMD, not every web asset on AMD. Render hosts the page and Node proxy; narrative inference remains on the configured AMD deployment. This arrangement fits that wording, subject to the organizers' final decision and evidence that the AMD workload is actually running.
+
 ## Pitch
 
 EchoSphere is an audio-first interactive storytelling prototype for entertainment creators and museum-style experiences. In a starfield, a draggable 3D atom with sixteen orbits and 222 electrons reacts as the participant speaks. Local 50 ms acoustic analysis shapes visuals and ambience; browser Whisper recognizes words. An Evolus agent connected to the submitter's AMD-hosted open model leads the story and responds to the participant. Local Kokoro narration moves through binaural space according to story cues and vocal delivery. Participants can interrupt, speak softly, or use text. An explicitly labelled offline script provides a fallback. Live narrative inference is remote; the whole system is not fully local.
@@ -98,7 +100,7 @@ The final live typed comparison also passed: the quiet response described a guid
 
 This is a hackathon prototype. It includes browser Whisper/Kokoro integration and a single HRTF-positioned narrator, but not learned emotion inference, multi-character direction, calibrated directional haptic hardware, or a measured whisper-classification accuracy benchmark. Ambient stereo panning is separate from the narrator's HRTF rendering. Browser vibration is not directional haptics. The live narrative model is remote. The first speech-model download is substantial and local inference speed depends on the visitor's device. Tests use synthetic audio and browser automation; physical microphone, headphone localization, and voice quality require listening tests.
 
-Before submission, finish the outstanding acceptance checks: successful real Whisper recognition and Kokoro generation, followed by the complete flow on the actual deployed HTTPS URL. Current cloud model access is blocked by network policy; the conversation test uses mocked models. Do not claim this is already a verified public demo.
+Before submission, finish the outstanding acceptance checks: successful real Whisper recognition and Kokoro generation, followed by the complete flow on the actual deployed HTTPS URL. The cloud allowlist was published and confirmed on 2026-10-18, but the active proxy still denies Hugging Face and the real model test fails to fetch. The conversation test uses mocked models. Do not claim this is already a verified public demo.
 
 The saved Evolus agent initially returned Italian despite system-role English guidance. Placing the English narration request directly before the intact JSON report produced an English live response; the adapter now uses that format. Still verify the saved agent's language on the deployed service if its configuration changes.
 

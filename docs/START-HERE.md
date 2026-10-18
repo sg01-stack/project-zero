@@ -4,6 +4,8 @@ There are two separate setups. The first lets the coding environment test speech
 
 ## 1. Allow the cloud environment to test the speech models
 
+**Current status (2026-10-18): published and confirmed.** The saved configuration includes the model hosts below and retains the Evolus secret binding. The active cloud machine still receives a proxy HTTP 403 from Hugging Face, and `npm run test:models` fails to fetch. Do not re-enter the key or republish the same settings. A fresh task using this published environment may apply the updated network policy; successful model inference must still be checked there or on the deployed website. The steps below are for recreating the environment, not an outstanding action for the current owner.
+
 1. In Codex, open the **project-zero environment settings**. This is the page with **Scripts**, **Internet access**, and **Network secrets** from your screenshots.
 2. Leave **Allow Codex to access internet** switched on.
 3. Under **Additional allowed domains**, click the pencil/edit button.
@@ -18,14 +20,16 @@ There are two separate setups. The first lets the coding environment test speech
    cdn.jsdelivr.net
    ```
 
-5. The prepared draft also includes `www.youtube.com` and `www.twitch.tv` for the supplied kickoff links. The pasted transcript already lets us interpret the rules; video access is not needed to run EchoSphere.
+5. The published configuration also includes `www.youtube.com` and `www.twitch.tv` for the supplied kickoff links. The pasted transcript already lets us interpret the rules; video access is not needed to run EchoSphere.
 6. Leave **EVOLUS_API_KEY** under Network secrets. Its destination should remain the exact hostname `api.evolus.ai`; do not bind that key to the model-download or video sites.
 7. Click **Save draft**, then **Publish** if that control is shown. Wait for the environment update to finish. Saving a draft alone does not prove the running machine has the new access.
-8. Return to the chat and say **“Network settings published.”** The agent can then retry the actual model download and run `npm run test:models`.
+8. In a task using that published environment, retry the actual model download and run `npm run test:models`. A proxy denial is a failed download check, even when the saved allowlist is correct.
 
 You do not need to install Whisper, Kokoro, or Evolus Studio. Model weights download automatically inside the browser. The cloud check tests that code; it does not create a public website.
 
 ## 2. Create the website judges will open
+
+The [credential review](SECURITY-REVIEW.md) found no real keys in the current files or reviewed Git history. Revoke any key previously shared in chat if you have not already done so, and use its replacement in Render. You can make the repository public for submission; never add a real `.env` or key value to it.
 
 1. Open **[Deploy EchoSphere on Render](https://render.com/deploy?repo=https://github.com/sg01-stack/project-zero)**.
 2. Sign up or sign in. Choose **GitHub** when offered.
@@ -43,6 +47,8 @@ If the Blueprint screen does not appear: in Render choose **New → Blueprint**,
 The key already saved in Codex is for the coding environment. Render is a separate service, so its owner enters the key there once. Judges never enter or receive it. Do not attempt to copy a Codex proxy placeholder into Render; use the actual key from your Evolus account.
 
 The preset is a free Render service. It may sleep and take time to wake. An always-on instance requires a paid plan chosen by the owner; no paid plan is selected automatically. Your AMD model and Evolus workspace also need to remain available throughout judging. The kickoff transcript gives conflicting workspace expiry dates, so check the expiry in your own dashboard. Hosting the page does not extend those services.
+
+Using Render for the page/backend is consistent with the supplied kickoff requirement that a meaningful workload runs on AMD, provided narrative inference continues to use your AMD-hosted model. Keep proof of that deployment. The organizers decide final eligibility; the separate Evolus Business Agents track has additional requirements described in [EVOLUS-BUILDING-BLOCKS.md](EVOLUS-BUILDING-BLOCKS.md).
 
 ## 3. Submit the correct links
 
