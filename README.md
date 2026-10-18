@@ -4,7 +4,7 @@
 
 EchoSphere is an audio-first storytelling prototype for interactive entertainment and museum-style experiences. Your voice continuously shapes a starfield, a draggable sixteen-orbit atom, and ambient sound. A narrative guide responds through Evolus, while browser speech models recognize your words and render a spatial voice.
 
-[Owner setup](docs/START-HERE.md) · [Deploy on Render](https://render.com/deploy?repo=https://github.com/sg01-stack/project-zero) · [Judge walkthrough](docs/SUBMISSION.md) · [Presentation](docs/PRESENTATION.md) · [Security review](docs/SECURITY-REVIEW.md)
+[Owner setup](docs/START-HERE.md) · [Live Demo](https://echosphere-y3vv.onrender.com) · [Judge walkthrough](docs/SUBMISSION.md) · [Presentation](docs/PRESENTATION.md) · [Security review](docs/SECURITY-REVIEW.md)
 
 ![EchoSphere: a sixteen-orbit atom in a starfield above the welcome message](docs/preview.png)
 
