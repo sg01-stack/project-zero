@@ -4,7 +4,7 @@
 
 EchoSphere is an audio-first storytelling prototype for interactive entertainment and museum-style experiences. Your voice continuously shapes a starfield, a draggable sixteen-orbit atom, and ambient sound. A narrative guide responds through Evolus, while browser speech models recognize your words and render a spatial voice.
 
-[Owner setup](docs/START-HERE.md) · [Deploy on Render](https://render.com/deploy?repo=https://github.com/sg01-stack/project-zero) · [Judge walkthrough](docs/SUBMISSION.md) · [Security review](docs/SECURITY-REVIEW.md)
+[Owner setup](docs/START-HERE.md) · [Deploy on Render](https://render.com/deploy?repo=https://github.com/sg01-stack/project-zero) · [Judge walkthrough](docs/SUBMISSION.md) · [Presentation](docs/PRESENTATION.md) · [Security review](docs/SECURITY-REVIEW.md)
 
 ![EchoSphere: a sixteen-orbit atom in a starfield above the welcome message](docs/preview.png)
 
@@ -106,7 +106,7 @@ Whisper accuracy on real whispered speech has not been benchmarked. Quiet-input 
 - [Voice models, spatial controls and acceptance checks](docs/VOICES.md)
 - [Audio events, JSON schema and custom integration](docs/INTEGRATION.md)
 - [Submission description, AMD evidence and cost worksheet](docs/SUBMISSION.md)
-- [Presentation outline: at most five minutes](docs/PRESENTATION.md)
+- [Six-slide presentation and timed script: 4:10](docs/PRESENTATION.md) · [PowerPoint](docs/presentation/EchoSphere-Pitch.pptx) · [PDF](docs/presentation/EchoSphere-Pitch.pdf)
 - [Security review](docs/SECURITY-REVIEW.md) · [Third-party provenance and licenses](vendor/README.md)
 
 The full page is in `index.html`, styling in `style.css`, browser code in `src/`, and the backend in `server/`. Generated files in `dist/` should not be edited by hand.
